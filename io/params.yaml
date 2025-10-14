@@ -1,0 +1,71 @@
+path_reuse_sm2:      # ← パッケージ名でなく「ノード名」でもOK。launch 側の Node(name=...) に一致させるのが吉
+  ros__parameters:
+    # ----------- 基本設定 -----------
+    
+
+    # ----------- 例: ex1 の姿勢/目標 -----------
+    ex1:
+      Joint:
+        Start:
+          Cspace: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        PickPoint:
+          Cspace: [0.916, 0.724, -1.700, 0.001, 0.977, -0.67]
+        PlacePoint:
+          Cspace: [2.227, 0.731, -1.714, 0.002, 0.983, 0.551]
+      Tspace:
+        # [x, y, z, (wx, wy, wz, ww があれば続けて)]
+        PickPoint: [0.38435431684821103, 0.5008825942081249, 0.04786987646752977]
+        PlacePoint: [-0.38694509001475835, 0.5019096528287742, 0.04863467328972923,
+                     -0.6693602304811596, -0.7429375494123738, 0.000814498968426075, 0.0001269439897275006]
+
+    # ----------- STOMP パラメータ -----------
+    StompParams:
+      Start:
+        num_timesteps: 60
+        num_iterations: 60
+        num_iterations_after_valid: 10
+        num_rollouts: 30
+        max_rollouts: 30
+        initialization_method: 1
+        control_cost_weight: 0.1
+        stddev: [0.1, 0.1, 0.4, 0.8, 0.8, 0.5]
+
+      PickPoint:
+        Initial_Phase:
+          num_timesteps: 75
+          num_iterations: 75
+          num_iterations_after_valid: 10
+          num_rollouts: 25
+          max_rollouts: 75
+          initialization_method: 1
+          control_cost_weight: 0.0
+          stddev: [0.1, 0.1, 0.4, 0.2, 0.4, 0.5]
+        Implement_Phase:
+          num_timesteps: 8
+          num_iterations: 8
+          num_iterations_after_valid: 1
+          num_rollouts: 5
+          max_rollouts: 5
+          initialization_method: 1
+          control_cost_weight: 0.0
+          stddev: [0.01, 0.04, 0.04, 0.02, 0.04, 0.05]
+
+      PlacePoint:
+        Initial_Phase:
+          num_timesteps: 75
+          num_iterations: 75
+          num_iterations_after_valid: 10
+          num_rollouts: 25
+          max_rollouts: 75
+          initialization_method: 1
+          control_cost_weight: 0.0
+          stddev: [0.1, 0.1, 0.4, 0.2, 0.4, 0.5]
+        Implement_Phase:
+          num_timesteps: 8
+          num_iterations: 8
+          num_iterations_after_valid: 1
+          num_rollouts: 5
+          max_rollouts: 5
+          initialization_method: 1
+          control_cost_weight: 0.0
+          stddev: [0.01, 0.04, 0.04, 0.02, 0.04, 0.05]

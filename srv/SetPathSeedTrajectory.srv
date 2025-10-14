@@ -1,0 +1,6 @@
+# Request
+PathSeed path_seed
+---
+# Response
+bool success
+string message

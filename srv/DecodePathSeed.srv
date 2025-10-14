@@ -1,0 +1,5 @@
+string path_seed_name
+float32[] start_joints
+float32[] goal_joints
+---
+PathSeed path_seed

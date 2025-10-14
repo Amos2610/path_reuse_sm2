@@ -1,0 +1,6 @@
+trajectory_msgs/JointTrajectory trajectory
+string trajectory_file_path
+string relative_saved_path    # 例: "ex1_pick_and_place/pre_defined/pick/pathseed_pick.txt"
+---
+bool success
+string path_seed_path         # 実際に保存された絶対パス
