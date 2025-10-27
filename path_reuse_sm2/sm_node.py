@@ -3,15 +3,7 @@
 
 """
 PRSM (Path Reuse-based State Machine) のメインノード。
-
-設計方針：
-- 各Skillは SkillState(State継承) として実装済み（方針A：超薄アダプタ）
-- 本ノードでは、flowに従ってSkillを順番にStateMachineへ登録する
-- Viewer(YasminViewerPub) と連携し、状態遷移を可視化する
-- 関数の中に関数は作らない（可読性/保守性重視）
-- threading.Timerは使わず、rclpyのTimerで一度だけ実行する
 """
-
 import os
 import json
 from typing import Any, Dict, List
@@ -32,6 +24,7 @@ from yasmin_viewer import YasminViewerPub
 from path_reuse_sm2.core.plugin import discover, get, names
 from path_reuse_sm2.core.flow import normalize
 from path_reuse_sm2.skills.skill_standard import SkillStart
+
 
 class PRSMNode(Node):
     """
@@ -66,7 +59,7 @@ class PRSMNode(Node):
         self._viewer_pub = YasminViewerPub(
             fsm_name="prsm_viewer",
             fsm=self.sm,
-            rate=2,
+            rate=10.0,
             node=self
         )
         self.get_logger().info("[PRSM] Viewer attached (signature: topic,node,rate,state_machine).")
@@ -85,7 +78,7 @@ class PRSMNode(Node):
     def _declare_params(self) -> None:
         """本ノードが受け取るROSパラメータを宣言する。"""
         # flow: ["SkillGraspObj", ...] または [{"name": "SkillGraspObj", "args": {...}}, ...]
-        self.declare_parameter("flow", ["SkillGraspObj", "SkillUpdatePathSeed", "SkillPutObj"])
+        self.declare_parameter("flow", ["SkillGraspObj", "SkillPutObj"])
         # flow_args_json: {"SkillGraspObj": {"speed": 0.5}, "SkillPutObj": {"place": "binA"}} のような追加引数
         self.declare_parameter("flow_args_json", "")
         # params_file: 共有パラメータ（YAML等）のファイルパス（将来使用）

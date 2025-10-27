@@ -1,7 +1,7 @@
 path_reuse_sm2:      # ← パッケージ名でなく「ノード名」でもOK。launch 側の Node(name=...) に一致させるのが吉
   ros__parameters:
     # ----------- 基本設定 -----------
-    
+    flow: ["SkillGraspObj", "SkillPutObj"]  # ← スキルの実行順序。自己遷移は launch/task.launch.py 側で指定
 
     # ----------- 例: ex1 の姿勢/目標 -----------
     ex1:

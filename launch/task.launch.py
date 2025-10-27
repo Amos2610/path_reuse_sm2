@@ -15,8 +15,8 @@ def generate_launch_description():
         name='prsm_node',
         output='screen',
         parameters=[{
-            'flow': ['SkillGraspObj', 'SkillUpdatePathSeed', 'SkillPutObj', 'SkillUpdatePathSeed'],
-            'loop': True,               # flowの最後→最初に戻る
+            'flow': ['SkillGraspObj', 'SkillPutObj'],
+            'loop': False,               # flowの最後→最初に戻る
             'hold_after': True,           # 実行後もしばらくノードを生かす
             'params_file': params_file,   # いまはログのみ
         }],
