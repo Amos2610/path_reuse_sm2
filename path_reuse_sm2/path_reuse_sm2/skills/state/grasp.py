@@ -131,11 +131,14 @@ class Grasp(XArmUtilsWrapper, State):
             self.pr_node.get_logger().error("Failed to set joint value target.")
             return "except"
         
-        use_pathseed = True  # TODO: blackboard等で切り替え可能に
+        # use_pathseed = True  # TODO: blackboard等で切り替え可能に
+        use_pathseed = self.pr_node.get_parameter("use_pathseed").value
+        self.pr_node.get_logger().info(f"use_pathseed: {use_pathseed}")
         if use_pathseed:
             self.xarm.set_move_group_parameter("stomp.use_custom_trajectory", True)
             # PathSeedからSTOMP用軌道をセット
-            pathseed_file = "src/path_reuse_method/pathseeds/Library/ex1_pick_and_place/updated/pathseed_pick.txt"
+            # pathseed_file = "src/path_reuse_method/pathseeds/Library/ex1_pick_and_place/updated/pathseed_pick.txt"
+            pathseed_file = self.pr_node.get_parameter("pathseed_grasp").value
             # pathseed_file = "src/path_reuse_method/pathseeds/Library/ex1_pick_and_place/pre_defined/pick/pathseed_pick_0529_RRT09.txt"
             success_generated = self.generate_stomp_path_from_pathseed(
                 file_path=pathseed_file,

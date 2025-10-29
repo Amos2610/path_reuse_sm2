@@ -13,6 +13,7 @@ from abc import ABC, abstractmethod
 from rclpy.node import Node
 from yasmin.blackboard import Blackboard
 
+
 class Skill(ABC):
     """各スキルの共通IF。必要なら run 内部でミニ状態機械を組んでOK。"""
     name: str = "Skill"

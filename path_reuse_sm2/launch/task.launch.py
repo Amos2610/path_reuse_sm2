@@ -1,27 +1,35 @@
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
 from launch_ros.actions import Node
-from launch.substitutions import PathJoinSubstitution
+from launch.substitutions import PathJoinSubstitution, LaunchConfiguration
 from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
-    params_file = PathJoinSubstitution([
+    default_params = PathJoinSubstitution([
         FindPackageShare('path_reuse_sm2'),
         'io', 'params.yaml'
     ])
+
+    declare_params = DeclareLaunchArgument(
+        'params_file',
+        default_value=default_params,
+        description='YAML file with node parameters'
+    )
+
+    params_file = LaunchConfiguration('params_file')
 
     prsm = Node(
         package='path_reuse_sm2',
         executable='sm_node.py',
         name='prsm_node',
         output='screen',
-        parameters=[{
-            # 'flow': ['SkillGraspObj', 'SkillPutObj'],
-            # 'flow': ['SkillFindObj', 'SkillGraspObj', 'SkillPutObj'],
-            'flow': ['SkillFindObj'],
-            'loop': False,               # flowの最後→最初に戻る
-            'hold_after': True,           # 実行後もしばらくノードを生かす
-            'params_file': params_file,   # いまはログのみ
-        }],
+        parameters=[
+            params_file,
+            {
+                'loop': False,               # flowの最後→最初に戻る
+                'hold_after': True,           # 実行後もしばらくノードを生かす
+            }
+        ],
     )
 
     viewer = Node(

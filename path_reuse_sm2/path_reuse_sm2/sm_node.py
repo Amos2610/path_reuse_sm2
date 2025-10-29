@@ -36,7 +36,7 @@ class PRSMNode(Node):
 
         # --- 1) パラメータ定義と読込 ---
         self._declare_params()
-        raw_flow, flow_args_json, params_file, hold_after, start_delay = self._read_params()
+        raw_flow, flow_args_json, start_delay = self._read_params()
 
         self._loop = self.get_parameter("loop").value
 
@@ -45,9 +45,6 @@ class PRSMNode(Node):
 
         # --- 3) 追加引数のマージ（flow_args_jsonを各step.argsへ）---
         self._merge_extra_args(self.flow, flow_args_json)
-
-        # --- 4) paramsファイル（存在チェックのみ。将来ここで読む想定）---
-        self._log_params_file(params_file)
 
         # --- 5) スキルを自動発見（@skillデコレータ登録を有効化）---
         self._discover_skills()
@@ -65,12 +62,11 @@ class PRSMNode(Node):
         self.get_logger().info("[PRSM] Viewer attached (signature: topic,node,rate,state_machine).")
 
         # --- 8) 実行
-        self._hold_after = hold_after
         self._sm_cb_group = MutuallyExclusiveCallbackGroup() # ステートマシン用のCallbackGroup
         self._start_timer = self.create_timer(
             start_delay, self._run_once_and_stop_timer, callback_group=self._sm_cb_group
         )
-        self.get_logger().info(f"[PRSM] initialized. start_delay={start_delay}, hold_after={hold_after}")
+        self.get_logger().info(f"[PRSM] initialized. start_delay={start_delay} sec")
 
     # -------------------------
     # パラメータ処理
@@ -81,23 +77,23 @@ class PRSMNode(Node):
         self.declare_parameter("flow", ["SkillGraspObj", "SkillPutObj"])
         # flow_args_json: {"SkillGraspObj": {"speed": 0.5}, "SkillPutObj": {"place": "binA"}} のような追加引数
         self.declare_parameter("flow_args_json", "")
-        # params_file: 共有パラメータ（YAML等）のファイルパス（将来使用）
-        self.declare_parameter("params_file", "")
-        # hold_after: 実行後にノードを保持（Trueならrclpy.spin継続、Falseなら終了）
-        self.declare_parameter("hold_after", True)
         # start_delay: Viewer購読準備のための起動遅延（秒）
         self.declare_parameter("start_delay", 0.5)
         # loop: flowの最後→最初に戻る（Trueでループ、Falseで一回きり）
         self.declare_parameter("loop", True)
+        # use_pathseed: PathSeedを使うかどうか
+        self.declare_parameter("use_pathseed", True)
+        # pathseed_grasp: Grasp用PathSeedファイルパス
+        self.declare_parameter("pathseed_grasp", "")
+        # pathseed_put: Put用PathSeedファイルパス
+        self.declare_parameter("pathseed_put", "")
 
     def _read_params(self):
         """宣言済みのパラメータ値を取得して返す。"""
         raw_flow = self.get_parameter("flow").value
         flow_args_json = self.get_parameter("flow_args_json").value
-        params_file = self.get_parameter("params_file").value
-        hold_after = self.get_parameter("hold_after").value
         start_delay = float(self.get_parameter("start_delay").value)
-        return raw_flow, flow_args_json, params_file, hold_after, start_delay
+        return raw_flow, flow_args_json, start_delay
 
     # -------------------------
     # Flow処理
@@ -220,12 +216,6 @@ class PRSMNode(Node):
         bb = Blackboard()  # Blackboardはステート間で共有するデータ置き場
         outcome = self.sm(bb)
         self.get_logger().info(f"[PRSM] outcome: {outcome}")
-
-        if not self._hold_after:
-            self.get_logger().info("[PRSM] shutting down")
-            # ノード終了 → rclpyシャットダウン
-            self.destroy_node()
-            rclpy.shutdown()
 
 
 def main():

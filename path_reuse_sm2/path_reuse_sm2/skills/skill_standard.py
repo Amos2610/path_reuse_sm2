@@ -3,15 +3,17 @@
 """
 Standard Skill: Put Object
 """
-from path_reuse_sm2.core.state import SkillState
+from yasmin.state import State
+from yasmin_ros.basic_outcomes import SUCCEED
 from path_reuse_sm2.core.plugin import skill
 
 
 @skill("SkillStart")
-class SkillStart(SkillState):
+class SkillStart(State):
     def __init__(self, node, **kwargs):
-        super().__init__(node, name="SkillStart")
+        super().__init__(outcomes=[SUCCEED])
+        self.node = node
 
-    def run(self, bb, **kwargs) -> bool:
+    def execute(self, blackboard):
         self.node.get_logger().info("[SkillStart] Start (dummy)")
-        return True
+        return SUCCEED
