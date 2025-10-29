@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+from typing import Any
 from xarm_utils_py import XArmUtils, Node
 
 
@@ -21,3 +24,7 @@ class XArmUtilsWrapper:
 
     def set_pipeline(self, name: str):
         self.xarm.set_planning_pipeline(name)
+
+    def set_move_group_parameter(self, key: str, value: Any):
+        self.xarm.set_move_group_parameter(key, value)
+        

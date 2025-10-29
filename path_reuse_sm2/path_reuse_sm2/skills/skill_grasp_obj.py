@@ -35,8 +35,16 @@ class SkillGraspObj(State):
             fsm=self._sm
         )
 
+    def get_blackboard(self, bb) -> bool:
+        if not hasattr(bb, "obj_pose") or bb.obj_pose is None:
+            self.node.get_logger().error("Blackboard missing 'obj_pose'.")
+            return False
+        return True        
+
     def execute(self, blackboard: Dict[str, Any]) -> str:
         self.node.get_logger().info("Executing SkillGraspObj...")
+        if not self.get_blackboard(blackboard):
+            return ABORT
         outcome = self._sm.execute(blackboard)
         if outcome == "success":
             return SUCCEED

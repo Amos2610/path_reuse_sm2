@@ -6,28 +6,19 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_python REQUIRED) 
 find_package(rclcpp REQUIRED)
 find_package(rclpy REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
 find_package(yasmin REQUIRED)
 find_package(yasmin_viewer REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 
-include_directories(include)
-ament_export_include_directories(include)
-
-rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/PathSeed.msg"
-  "srv/SetPathSeedTrajectory.srv"
-  "srv/GetPathSeedTrajectory.srv"
-  "srv/DecodePathSeed.srv"
-  "srv/EncodePathSeed.srv"
-  DEPENDENCIES std_msgs trajectory_msgs
+# Pythonパッケージのインストール（CMakeListsから見て、直下の path_reuse_sm2/ がパッケージ）
+ament_python_install_package(${PROJECT_NAME}
+  PACKAGE_DIR path_reuse_sm2
 )
-
-ament_export_dependencies(rosidl_default_runtime rclcpp std_msgs)
 
 # Python パッケージをインストール
 install(PROGRAMS
