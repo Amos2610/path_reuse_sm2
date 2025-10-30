@@ -20,11 +20,11 @@ class SkillPutObj(State):
         super().__init__(outcomes=[SUCCEED, ABORT, CANCEL])
         self.node = node
         put = Put(node, approach_margin=kwargs.get("put_approach_margin", 0.01))
-        update_path_seed = UpdatePathSeed(node, margin_mm=kwargs.get("seed_margin_mm", 5.0))
+        update_path_seed = UpdatePathSeed(node, margin_mm=kwargs.get("seed_margin_mm", 5.0), type="put")
 
         self._sm = StateMachine(outcomes=["success", "except"])
         self._sm.add_state("PUT", put,
-                        transitions={"success": "success", "loop": "PUT", "except": "except"})
+                        transitions={"success": "UPDATE_PATHSEED", "loop": "PUT", "except": "except"})
         self._sm.add_state("UPDATE_PATHSEED", update_path_seed,
                         transitions={"success": "success", "except": "except"})
         

@@ -20,7 +20,7 @@ class SkillGraspObj(State):
         super().__init__(outcomes=[SUCCEED, ABORT, CANCEL])
         self.node = node
         grasp = Grasp(node, approach_margin=kwargs.get("grasp_approach_margin", 0.01))
-        update_path_seed = UpdatePathSeed(node, margin_mm=kwargs.get("seed_margin_mm", 5.0))
+        update_path_seed = UpdatePathSeed(node, margin_mm=kwargs.get("seed_margin_mm", 5.0), type="grasp")
 
         self._sm = StateMachine(outcomes=["success", "except"])
         self._sm.add_state("GRASP", grasp,

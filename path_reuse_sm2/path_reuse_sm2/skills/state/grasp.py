@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import os
 import time
+from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 from yasmin.state import State
 from path_reuse_method.path_seed_client import PathSeedClient
@@ -119,8 +121,9 @@ class Grasp(XArmUtilsWrapper, State):
         self.pr_node.get_logger().info("------------------------------------------------")
         self.pr_node.get_logger().info(f"Grasp state executed. approach_margin={self.approach_margin}")
         self.pr_node.get_logger().info("------------------------------------------------")
-
-        # self.phase = blackboard.get("phase", "Initial_Phase")
+        self._current_blackboard = blackboard
+        self.phase = self.pr_node.get_parameter("grasp_phase").value
+        self.pr_node.get_logger().info(f"Current phase: {self.phase}")
         # env = blackboard.get("env", {})
         # pipeline = blackboard.get("pipeline", "stomp")
         # self.xarm.set_planning_pipeline("ompl")
@@ -135,11 +138,19 @@ class Grasp(XArmUtilsWrapper, State):
         use_pathseed = self.pr_node.get_parameter("use_pathseed").value
         self.pr_node.get_logger().info(f"use_pathseed: {use_pathseed}")
         if use_pathseed:
-            self.xarm.set_move_group_parameter("stomp.use_custom_trajectory", True)
             # PathSeedからSTOMP用軌道をセット
-            # pathseed_file = "src/path_reuse_method/pathseeds/Library/ex1_pick_and_place/updated/pathseed_pick.txt"
-            pathseed_file = self.pr_node.get_parameter("pathseed_grasp").value
-            # pathseed_file = "src/path_reuse_method/pathseeds/Library/ex1_pick_and_place/pre_defined/pick/pathseed_pick_0529_RRT09.txt"
+            self.xarm.set_move_group_parameter("stomp.use_custom_trajectory", True)
+            self.pr_node.get_logger().info(f"Grasp phase: {self.phase}")
+            if self.phase == "Initial_Phase":
+                pathseed_file = self.pr_node.get_parameter("pathseed_grasp").value
+            elif self.phase == "Imprementation_Phase":
+                default_pathseed_file = self.pr_node.get_parameter("pathseed_grasp").value
+                # updateしたパスシードはex1_pick_and_place/updated/pathseed_pick.txtに保存される想定
+                pathseed_file = "/".join(default_pathseed_file.split("/")[:-3]) + "/updated/pathseed_pick.txt"
+            else:
+                self.pr_node.get_logger().error(f"Unknown phase: {self.phase}")
+                return "except"
+            self.pr_node.get_logger().info(f"[Grasp] Using pathseed file: {pathseed_file}")
             success_generated = self.generate_stomp_path_from_pathseed(
                 file_path=pathseed_file,
                 start_joint_values=start_joint_values,
@@ -161,6 +172,10 @@ class Grasp(XArmUtilsWrapper, State):
                 self.pr_node.get_logger().error("Execution failed.")
                 return "except"
             self.pr_node.get_logger().info("Execution succeeded.")
+            # Blackboardに軌道を保存
+            if self._current_blackboard is not None:
+                setattr(self._current_blackboard, 'grasp_trajectory', deepcopy(plan))
+                self.pr_node.get_logger().info(f"[Grasp] stored grasp_trajectory to BB (points={len(plan.points)})")
             return "success"
         else:
             self.pr_node.get_logger().warn("No valid plan found, retrying...")

@@ -26,7 +26,7 @@ def generate_launch_description():
         parameters=[
             params_file,
             {
-                'loop': False,               # flowの最後→最初に戻る
+                'loop': True,               # flowの最後→最初に戻る
                 'hold_after': True,           # 実行後もしばらくノードを生かす
             }
         ],

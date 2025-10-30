@@ -87,6 +87,10 @@ class PRSMNode(Node):
         self.declare_parameter("pathseed_grasp", "")
         # pathseed_put: Put用PathSeedファイルパス
         self.declare_parameter("pathseed_put", "")
+        # phase: 現在の動作フェーズ
+        # self.declare_parameter("phase", "Initial_Phase")
+        self.declare_parameter("grasp_phase", "Initial_Phase")
+        self.declare_parameter("put_phase", "Initial_Phase")
 
     def _read_params(self):
         """宣言済みのパラメータ値を取得して返す。"""

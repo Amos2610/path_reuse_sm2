@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 from yasmin.state import State
-from xarm_utils_py import XArmUtils , Node
+from rclpy.action import ActionServer
+from trajectory_msgs.msg import JointTrajectory
+from moveit_msgs.action import ExecuteTrajectory
 from path_reuse_method.path_seed_client import PathSeedClient
 from path_reuse_sm2.core.xarm_utils import XArmUtilsWrapper
 
@@ -13,6 +16,14 @@ class Put(XArmUtilsWrapper, State):
         XArmUtilsWrapper.__init__(self)
         self.pr_node = node
         self.pr_client = PathSeedClient()
+        # ActionServerの初期化
+        self._action_server = ActionServer(
+            self.pr_node,
+            ExecuteTrajectory,
+            '/prsm/put/execute_trajectory',
+            self.execute_trajectory_callback
+        )
+        self._last_executed_traj_msg: Optional[JointTrajectory] = None
         self.approach_margin = approach_margin
 
         # ROS1互換フィールド名
@@ -26,7 +37,22 @@ class Put(XArmUtilsWrapper, State):
         self.max_accel_scale_default = 0.3
         self.planning_time_default = 2.0
 
-    # ====== ROS1: set_stomp_params ======
+    async def execute_trajectory_callback(self, goal_handle):
+        self.pr_node.get_logger().info("Received ExecuteTrajectory goal.")
+        try:
+            trajectory: JointTrajectory = goal_handle.request.trajectory.joint_trajectory
+            self._last_executed_traj_msg = trajectory
+            # Blackboardに反映
+            if self._current_blackboard is not None:
+                setattr(self._current_blackboard, 'put_trajectory', trajectory)
+            goal_handle.succeed()
+            return ExecuteTrajectory.Result()
+        except Exception as e:
+            self.pr_node.get_logger().error(f"Error executing trajectory: {e}")
+            goal_handle.abort()
+            return ExecuteTrajectory.Result()
+
+    # ====== set_stomp_params ======
     # 目的: 与えられたphase(dict)をMoveItへ適用（ROS2ではrosparamでなくAPI直適用）
     def set_stomp_params(self, phase: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -107,20 +133,20 @@ class Put(XArmUtilsWrapper, State):
         #TODO: ここでcontainer_poseからTF変換，逆運動学を使ってstart_joint_valuesを計算する
         # 一旦container_poseのまま使う
         goal_joint_values = container_pose
-        self.pr_node.get_logger().info(f"Grasp goal joint values: {goal_joint_values}")
+        self.pr_node.get_logger().info(f"Put goal joint values: {goal_joint_values}")
         
         #TODO: ここでobj_poseからTF変換，逆運動学を使ってgoal_joint_valuesを計算する
         # 一旦obj_poseのまま使う
         start_joint_values = obj_pose
-        self.pr_node.get_logger().info(f"Grasp start joint values: {start_joint_values}")
+        self.pr_node.get_logger().info(f"Put start joint values: {start_joint_values}")
         return start_joint_values, goal_joint_values
 
     def execute(self, blackboard=None):
         self.pr_node.get_logger().info("------------------------------------------------")
         self.pr_node.get_logger().info(f"Put state executed. approach_margin={self.approach_margin}")
         self.pr_node.get_logger().info("------------------------------------------------")
-
-        # self.phase = blackboard.get("phase", "Initial_Phase")
+        self._current_blackboard = blackboard
+        self.phase = self.pr_node.get_parameter("put_phase").value
         # env = blackboard.get("env", {})
         # pipeline = blackboard.get("pipeline", "stomp")
         # self.xarm.set_planning_pipeline("ompl")
@@ -133,11 +159,19 @@ class Put(XArmUtilsWrapper, State):
         # use_pathseed = True  # TODO: blackboard等で切り替え可能に
         use_pathseed = self.pr_node.get_parameter("use_pathseed").value
         if use_pathseed:
-            self.xarm.set_move_group_parameter("stomp.use_custom_trajectory", True)
             # PathSeedからSTOMP用軌道をセット
-            # pathseed_file = "src/path_reuse_method/pathseeds/Library/ex1_pick_and_place/updated/pathseed_place.txt"
-            pathseed_file = self.pr_node.get_parameter("pathseed_put").value
-            # pathseed_file = "src/path_reuse_method/pathseeds/Library/ex1_pick_and_place/pre_defined/pick/pathseed_pick_0529_RRT09.txt"
+            self.xarm.set_move_group_parameter("stomp.use_custom_trajectory", True)
+            self.pr_node.get_logger().info(f"Put phase: {self.phase}")
+            if self.phase == "Initial_Phase":
+                pathseed_file = self.pr_node.get_parameter("pathseed_put").value
+            elif self.phase == "Imprementation_Phase":
+                default_pathseed_file = self.pr_node.get_parameter("pathseed_put").value
+                # updateしたパスシードはex1_pick_and_place/updated/pathseed_pick.txtに保存される想定
+                pathseed_file = "/".join(default_pathseed_file.split("/")[:-3]) + "/updated/pathseed_pick.txt"
+            else:
+                self.pr_node.get_logger().error(f"Unknown phase: {self.phase}")
+                return "except"
+            self.pr_node.get_logger().info(f"[Put] Using pathseed file: {pathseed_file}")
             success_generated = self.generate_stomp_path_from_pathseed(
                 file_path=pathseed_file,
                 start_joint_values=start_joint_values,
@@ -159,6 +193,10 @@ class Put(XArmUtilsWrapper, State):
                 self.pr_node.get_logger().error("Execution failed.")
                 return "except"
             self.pr_node.get_logger().info("Execution succeeded.")
+            # Blackboardに軌道を保存
+            if self._current_blackboard is not None:
+                setattr(self._current_blackboard, 'put_trajectory', deepcopy(plan))
+                self.pr_node.get_logger().info(f"[Put] stored put_trajectory to BB (points={len(plan.points)})")
             return "success"
         else:
             self.pr_node.get_logger().warn("No valid plan found, retrying...")
