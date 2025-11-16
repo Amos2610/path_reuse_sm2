@@ -167,7 +167,7 @@ class Put(XArmUtilsWrapper, State):
             elif self.phase == "Imprementation_Phase":
                 default_pathseed_file = self.pr_node.get_parameter("pathseed_put").value
                 # updateしたパスシードはex1_pick_and_place/updated/pathseed_pick.txtに保存される想定
-                pathseed_file = "/".join(default_pathseed_file.split("/")[:-3]) + "/updated/pathseed_pick.txt"
+                pathseed_file = "/".join(default_pathseed_file.split("/")[:-3]) + "/updated/pathseed_place.txt"
             else:
                 self.pr_node.get_logger().error(f"Unknown phase: {self.phase}")
                 return "except"

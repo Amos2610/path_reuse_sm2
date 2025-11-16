@@ -7,7 +7,7 @@ from typing import Any, Dict
 from yasmin.state import State
 from yasmin.state_machine import StateMachine
 from yasmin_ros.basic_outcomes import SUCCEED, ABORT, CANCEL
-from yasmin_viewer import YasminViewerPub
+# from yasmin_viewer import YasminViewerPub
 from path_reuse_sm2.core.plugin import skill
 
 from path_reuse_sm2.skills.state.put import Put
@@ -28,12 +28,12 @@ class SkillPutObj(State):
         self._sm.add_state("UPDATE_PATHSEED", update_path_seed,
                         transitions={"success": "success", "except": "except"})
         
-        self._viewer_pub = YasminViewerPub(
-            fsm_name="skill_put_obj_viewer",
-            node=self.node,
-            rate=10.0,
-            fsm=self._sm
-        )
+        # self._viewer_pub = YasminViewerPub(
+        #     fsm_name="skill_put_obj_viewer",
+        #     node=self.node,
+        #     rate=10.0,
+        #     fsm=self._sm
+        # )
 
     def execute(self, blackboard: Dict[str, Any]) -> str:
         self.node.get_logger().info("Executing SkillPutObj...")
