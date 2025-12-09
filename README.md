@@ -70,3 +70,14 @@ rosdep install --from-paths src --ignore-src -r -y
 colcon build --packages-select path_reuse_sm2 --symlink-install
 source install/setup.bash
 ```
+
+### 🚀 Usage
+To launch a sample PRSM state machine with visualization:
+TODO: params_fileを指定しないと動かない
+```bash
+ros2 launch path_reuse_sm2 task.launch.py params_file:=<path_to_params.yaml>
+```
+```bash
+# Example launch command
+ros2 launch path_reuse_sm2 task.launch.py params_file:=src/path_reuse_sm2/path_reuse_sm2/io/params.yaml
+```
