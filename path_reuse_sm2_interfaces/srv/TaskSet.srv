@@ -1,0 +1,5 @@
+# TaskSet.srv
+TaskInfo task   # Task with a list of ordered skills
+---
+bool accepted   # true if the task is queued or started
+string message  # optional debug or rejection reason

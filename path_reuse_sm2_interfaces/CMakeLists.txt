@@ -17,7 +17,11 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GetPathSeedTrajectory.srv"
   "srv/DecodePathSeed.srv"
   "srv/EncodePathSeed.srv"
+  "srv/TaskGet.srv"
+  "srv/TaskSet.srv"
   "msg/PathSeed.msg"
+  "msg/Skill.msg"
+  "msg/TaskInfo.msg"
   DEPENDENCIES std_msgs trajectory_msgs
 )
 

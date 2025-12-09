@@ -1,0 +1,4 @@
+# TaskGet.srv
+---
+TaskInfo task   # Task with a list of ordered skills
+bool success    # true if a task is set, false otherwise

@@ -23,6 +23,7 @@ ament_python_install_package(${PROJECT_NAME}
 # Python パッケージをインストール
 install(PROGRAMS
   path_reuse_sm2/sm_node.py
+  path_reuse_sm2/sm_node_with_rag.py
   DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY ${PROJECT_NAME}

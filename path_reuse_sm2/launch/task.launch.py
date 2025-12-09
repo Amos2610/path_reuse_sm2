@@ -32,12 +32,19 @@ def generate_launch_description():
         ],
     )
 
+    task_get_service = Node(
+        package='path_reuse_sm2',
+        executable='task_get_service.py',
+        name='task_get_service',
+        output='screen',
+    )
+
     viewer = Node(
         package='yasmin_viewer',
         executable='yasmin_viewer_node',
         name='yasmin_viewer',
         output='screen',
-        # parameters=[{'port': 8080}],  # 必要なら
+        parameters=[{'port': 5001}],
     )
 
-    return LaunchDescription([viewer, prsm])
+    return LaunchDescription([viewer, prsm, task_get_service, declare_params])

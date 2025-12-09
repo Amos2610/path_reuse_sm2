@@ -13,6 +13,9 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
+from path_reuse_sm2_interfaces.srv import TaskSet
+from path_reuse_sm2_interfaces.msg import TaskInfo, Skill
+
 # モジュールのインポート（YASMIN関連）
 # https://github.com/uleroboticsgroup/yasmin.git
 from yasmin.blackboard import Blackboard
@@ -49,17 +52,29 @@ class PRSMNode(Node):
         # --- 5) スキルを自動発見（@skillデコレータ登録を有効化）---
         self._discover_skills()
 
-        # --- 6) ステートマシン構築（SkillStateをそのまま登録）---
-        self.sm = self._build_state_machine(self.flow)
+        # ステートマシン用のコールバックグループ
+        self._sm_cb_group = MutuallyExclusiveCallbackGroup()
 
-        # --- 7) Viewer連携（状態遷移をブラウザ表示）---
-        self._viewer_pub = YasminViewerPub(
-            fsm_name="prsm_viewer",
-            fsm=self.sm,
-            rate=10.0,
-            node=self
+        # TaskSet サービス
+        self._task_set_srv = self.create_service(
+            TaskSet,
+            'task_set',
+            self._task_set_callback,
+            callback_group=self._sm_cb_group,
         )
-        self.get_logger().info("[PRSM] Viewer attached (signature: topic,node,rate,state_machine).")
+
+        # --- 6) ステートマシン構築（SkillStateをそのまま登録）---
+        # self.sm = self._build_state_machine(self.flow)
+        self.sm = None  # 一旦Noneで初期化し、TaskSetコールバック内で構築する
+
+        # # --- 7) Viewer連携（状態遷移をブラウザ表示）---
+        # self._viewer_pub = YasminViewerPub(
+        #     fsm_name="prsm_viewer",
+        #     fsm=self.sm,
+        #     rate=10.0,
+        #     node=self
+        # )
+        # self.get_logger().info("[PRSM] Viewer attached (signature: topic,node,rate,state_machine).")
 
         # --- 8) 実行
         self._sm_cb_group = MutuallyExclusiveCallbackGroup() # ステートマシン用のCallbackGroup
@@ -98,6 +113,47 @@ class PRSMNode(Node):
         flow_args_json = self.get_parameter("flow_args_json").value
         start_delay = float(self.get_parameter("start_delay").value)
         return raw_flow, flow_args_json, start_delay
+    
+    # -------------------------
+    # サービスコールバック
+    # -------------------------
+    def _task_set_callback(self, request, response):
+        task: TaskInfo = request.task
+        skills = task.skills
+
+        if len(skills) == 0:
+            self.get_logger().warn("[PRSM] Received empty task.")
+            response.accepted = False
+            response.message = "Empty task."
+            return response
+
+        self.get_logger().info("[PRSM] 📥 Received TaskSet Request")
+        self.get_logger().info(f"[PRSM]   Skill Count: {len(skills)}")
+
+        for i, s in enumerate(skills):
+            self.get_logger().info(
+                f"    Skill[{i}] {s.skill_name} "
+                f"(target={s.target_location}, workpiece={s.workpiece}, "
+                f"path_seed_path={s.path_seed_path})"
+            )
+
+        # 1) TaskSet の Skill[] から flow を作る
+        flow = [{"name": s.skill_name, "args": {}} for s in skills]
+
+        # 2) flow に応じてステートマシンを作り直す
+        self.sm = self._build_state_machine(flow)
+
+        # 3) Blackboard に Skill[] を詰める
+        bb = Blackboard()
+        bb["skills"] = list(skills)
+
+        # 4) 実行
+        outcome = self.sm(bb)
+        self.get_logger().info(f"[PRSM] outcome: {outcome}")
+
+        response.accepted = True
+        response.message = f"Task executed with outcome={outcome}"
+        return response
 
     # -------------------------
     # Flow処理

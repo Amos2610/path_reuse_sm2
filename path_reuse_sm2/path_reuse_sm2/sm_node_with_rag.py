@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+PRSM (Path Reuse-based State Machine) のメインノード。
+TaskSet サービスで受け取った Skill[] から flow と StateMachine を構築して、
+そのタスク専用の PRSM を 1 回だけ実行する。
+"""
+
+from typing import Any, Dict, List
+
+import rclpy
+from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+
+from path_reuse_sm2_interfaces.srv import TaskSet
+from path_reuse_sm2_interfaces.msg import TaskInfo, Skill as SkillMsg
+
+from yasmin.blackboard import Blackboard
+from yasmin.state_machine import StateMachine
+from yasmin_ros.basic_outcomes import SUCCEED, ABORT, CANCEL
+# from yasmin_viewer import YasminViewerPub  # 必要になったら復活
+
+from path_reuse_sm2.core.plugin import discover, get, names
+from path_reuse_sm2.skills.skill_standard import SkillStart
+
+
+class PRSMNode(Node):
+    """
+    PRSM の中心となる ROS 2 ノード。
+    起動 → スキル発見 → TaskSet サービス待ち → TaskSet で flow/sm 構築 → 実行
+    """
+
+    def __init__(self) -> None:
+        super().__init__("prsm_node")
+
+        # --- 1) パラメータ定義と読込（ループだけ使う） ---
+        self._declare_params()
+        self._loop = self.get_parameter("loop").value
+
+        # --- 2) スキルを自動発見（@skill デコレータ登録を有効化）---
+        self._discover_skills()
+
+        # --- 3) ステートマシン（まだ構築しない。TaskSet ごとに作る） ---
+        self.sm: StateMachine | None = None
+
+        # --- 4) コールバックグループ & TaskSet サービス ---
+        self._sm_cb_group = MutuallyExclusiveCallbackGroup()
+        self._task_set_srv = self.create_service(
+            TaskSet,
+            "task_set",
+            self._task_set_callback,
+            callback_group=self._sm_cb_group,
+        )
+
+        self.get_logger().info("[PRSM] Node initialized. Waiting for /task_set requests...")
+
+    # -------------------------
+    # パラメータ処理
+    # -------------------------
+    def _declare_params(self) -> None:
+        """本ノードが受け取る ROS パラメータを宣言する。"""
+        # loop: flow の最後→最初に戻る（True でループ、False で一回きり）
+        self.declare_parameter("loop", False)
+
+    # -------------------------
+    # TaskSet サービスコールバック
+    # -------------------------
+    def _task_set_callback(self, request: TaskSet.Request, response: TaskSet.Response):
+        task: TaskInfo = request.task
+        skills = task.skills
+
+        if len(skills) == 0:
+            self.get_logger().warn("[PRSM] Received empty task.")
+            response.accepted = False
+            response.message = "Empty task."
+            return response
+
+        self.get_logger().info("[PRSM] 📥 Received TaskSet Request")
+        self.get_logger().info(f"[PRSM]   Skill Count: {len(skills)}")
+
+        for i, s in enumerate(skills):
+            self.get_logger().info(
+                f"    Skill[{i}] {s.skill_name} "
+                f"(target={s.target_location}, workpiece={s.workpiece}, "
+                f"path_seed_path={s.path_seed_path})"
+            )
+
+        # 1) TaskSet の Skill[] から flow を作る
+        #    [{"name": "SkillFindObj", "args": {...}}, ...] の形に変換
+        flow: List[Dict[str, Any]] = []
+        for s in skills:
+            step = {
+                "name": s.skill_name,
+                "args": {},  # ここに将来 skill ごとの追加 args を詰めてもよい
+            }
+            flow.append(step)
+
+        # 2) flow に応じてステートマシンを作り直す
+        self.sm = self._build_state_machine(flow)
+
+        # 3) Blackboard に Skill[] を詰める
+        bb = Blackboard()
+        bb["skills"] = list(skills)  # Skill.msg の配列をそのまま渡す
+
+        # 4) 実行（このサービス呼び出しの中で 1 回だけ）
+        outcome = self.sm(bb)
+        self.get_logger().info(f"[PRSM] outcome: {outcome}")
+
+        response.accepted = True
+        response.message = f"Task executed with outcome={outcome}"
+        return response
+
+    # -------------------------
+    # スキルの発見
+    # -------------------------
+    def _discover_skills(self) -> None:
+        """skills パッケージを探索し、@skill デコレータにより登録させる。"""
+        discover("path_reuse_sm2.skills")
+        self.get_logger().info(f"[PRSM] skills discovered: {names()}")
+
+    # -------------------------
+    # ステートマシン構築
+    # -------------------------
+    def _build_transitions(self, flow_names: List[str], loop: bool) -> Dict[str, Dict[str, str]]:
+        """
+        フローの遷移表を作成。
+        - state_id = "S{i}_{Name}"
+        - 成功(SUCCEED): 次ステートへ。loop=True のとき最後は先頭へ戻す。
+        - 失敗(ABORT)  : ABORT 終了。
+        """
+        transitions: Dict[str, Dict[str, str]] = {}
+        n = len(flow_names)
+        for i, name in enumerate(flow_names):
+            state_id = f"S{i}_{name}"
+            if i < n - 1:
+                next_id = f"S{i+1}_{flow_names[i+1]}"
+            else:
+                next_id = f"S0_{flow_names[0]}" if loop and n > 0 else SUCCEED
+            transitions[state_id] = {SUCCEED: next_id, ABORT: ABORT}
+        return transitions
+
+    def _build_state_machine(self, flow: List[Dict[str, Any]]) -> StateMachine:
+        """
+        flow の順番に沿って Skill(State) を生成・登録。
+        ループ指定(self._loop=True)なら、最後の SUCCEED 遷移は先頭に戻す。
+        """
+        sm = StateMachine(outcomes=[SUCCEED, ABORT, CANCEL])
+
+        # START ステート → 最初の Skill に遷移
+        sm.add_state(
+            name="START",
+            state=SkillStart(node=self),
+            transitions={SUCCEED: f"S0_{flow[0]['name']}" if flow else SUCCEED},
+        )
+
+        flow_names = [step["name"] for step in flow]
+        transitions_map = self._build_transitions(flow_names, loop=self._loop)
+
+        for i, step in enumerate(flow):
+            name = step["name"]
+            args = step.get("args", {}) or {}
+
+            try:
+                SkillCls = get(name)
+            except KeyError:
+                self.get_logger().error(f"[PRSM] skill not found: {name}")
+                continue
+
+            state_id = f"S{i}_{name}"
+
+            # ★ 重要: このステートが flow の何番目かを渡す
+            # Skill 側の __init__(node, step_index=..., **kwargs) で受ける想定
+            args["step_index"] = i
+
+            state = SkillCls(self, **args)
+            sm.add_state(state_id, state, transitions=transitions_map[state_id])
+
+        return sm
+
+
+def main():
+    """
+    エントリポイント。
+    - rclpy 初期化 → ノード生成 → spin
+    - 実行トリガは TaskSet サービスのみ
+    """
+    rclpy.init()
+    node = PRSMNode()
+    try:
+        exec = MultiThreadedExecutor(num_threads=2)
+        exec.add_node(node)
+        exec.spin()
+    finally:
+        if rclpy.ok():
+            node.destroy_node()
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()
