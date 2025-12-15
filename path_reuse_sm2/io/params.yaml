@@ -1,7 +1,7 @@
 prsm_node:      # ノード名
   ros__parameters:
     # ----------- 基本設定 -----------
-    flow: ["SkillFindObj", "SkillGraspObj", "SkillPutObj"]  # ← スキルの実行順序
+    flow: ["SkillMove", "SkillFindObj", "SkillGraspObj", "SkillPutObj"]  # ← スキルの実行順序
     use_pathseed: true
     pathseed_grasp: "src/path_reuse_method/pathseeds/Library/ex1_pick_and_place/pre_defined/pick/pathseed_pick_0529_STOMP01.txt"
     pathseed_put: "src/path_reuse_method/pathseeds/Library/ex1_pick_and_place/pre_defined/place/pathseed_place_0627_STOMP10.txt"
