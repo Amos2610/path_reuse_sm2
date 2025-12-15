@@ -20,7 +20,7 @@ def generate_launch_description():
 
     prsm = Node(
         package='path_reuse_sm2',
-        executable='sm_node.py',
+        executable='sm_node_with_rag.py',
         name='prsm_node',
         output='screen',
         parameters=[

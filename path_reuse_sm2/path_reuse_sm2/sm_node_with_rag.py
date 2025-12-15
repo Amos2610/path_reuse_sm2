@@ -23,7 +23,7 @@ from yasmin_ros.basic_outcomes import SUCCEED, ABORT, CANCEL
 # from yasmin_viewer import YasminViewerPub  # 必要になったら復活
 
 from path_reuse_sm2.core.plugin import discover, get, names
-from path_reuse_sm2.skills.skill_standard import SkillStart
+from path_reuse_sm2.skills.skill_standard import SkillStart, SkillRAGBridge
 
 
 class PRSMNode(Node):
@@ -49,25 +49,46 @@ class PRSMNode(Node):
         self._sm_cb_group = MutuallyExclusiveCallbackGroup()
         self._task_set_srv = self.create_service(
             TaskSet,
-            "task_set",
+            "prsm_task_set",
             self._task_set_callback,
             callback_group=self._sm_cb_group,
         )
 
-        self.get_logger().info("[PRSM] Node initialized. Waiting for /task_set requests...")
+        self.get_logger().info("[PRSM] Node initialized. Waiting for /prsm_task_set service calls...")
 
     # -------------------------
     # パラメータ処理
     # -------------------------
     def _declare_params(self) -> None:
         """本ノードが受け取る ROS パラメータを宣言する。"""
-        # loop: flow の最後→最初に戻る（True でループ、False で一回きり）
-        self.declare_parameter("loop", False)
+        # start_delay: Viewer購読準備のための起動遅延（秒）
+        self.declare_parameter("start_delay", 0.5)
+        # loop: flowの最後→最初に戻る（Trueでループ、Falseで一回きり）
+        self.declare_parameter("loop", True)
+        # use_pathseed: PathSeedを使うかどうか
+        self.declare_parameter("use_pathseed", True)
+        # pathseed_grasp: Grasp用PathSeedファイルパス
+        self.declare_parameter("pathseed_grasp", "")
+        # pathseed_put: Put用PathSeedファイルパス
+        self.declare_parameter("pathseed_put", "")
+        # phase: 現在の動作フェーズ
+        # self.declare_parameter("phase", "Initial_Phase")
+        self.declare_parameter("grasp_phase", "Initial_Phase")
+        self.declare_parameter("put_phase", "Initial_Phase")
 
     # -------------------------
     # TaskSet サービスコールバック
     # -------------------------
     def _task_set_callback(self, request: TaskSet.Request, response: TaskSet.Response):
+        available = set(names())
+        requested = [s.skill_name for s in request.task.skills]
+        unknown = [n for n in requested if n not in available]
+        if unknown:
+            response.accepted = False
+            response.message = f"Unknown skill(s): {unknown}"
+            self.get_logger().error(response.message)
+            return response
+
         task: TaskInfo = request.task
         skills = task.skills
 
@@ -96,6 +117,9 @@ class PRSMNode(Node):
                 "args": {},  # ここに将来 skill ごとの追加 args を詰めてもよい
             }
             flow.append(step)
+            self.get_logger().info(
+                f"Skill[{i}] name={repr(s.skill_name)} target={repr(s.target_location)} workpiece={repr(s.workpiece)} path_seed_path={repr(s.path_seed_path)}"
+            )
 
         # 2) flow に応じてステートマシンを作り直す
         self.sm = self._build_state_machine(flow)
@@ -129,6 +153,7 @@ class PRSMNode(Node):
         - state_id = "S{i}_{Name}"
         - 成功(SUCCEED): 次ステートへ。loop=True のとき最後は先頭へ戻す。
         - 失敗(ABORT)  : ABORT 終了。
+        - キャンセル(CANCEL): CANCEL 終了。
         """
         transitions: Dict[str, Dict[str, str]] = {}
         n = len(flow_names)
@@ -137,8 +162,12 @@ class PRSMNode(Node):
             if i < n - 1:
                 next_id = f"S{i+1}_{flow_names[i+1]}"
             else:
-                next_id = f"S0_{flow_names[0]}" if loop and n > 0 else SUCCEED
-            transitions[state_id] = {SUCCEED: next_id, ABORT: ABORT}
+                next_id = "RAGBridge" if loop and n > 0 else SUCCEED
+            transitions[state_id] = {
+                SUCCEED: next_id,
+                ABORT: ABORT,
+                CANCEL: CANCEL,
+            }
         return transitions
 
     def _build_state_machine(self, flow: List[Dict[str, Any]]) -> StateMachine:
@@ -148,11 +177,22 @@ class PRSMNode(Node):
         """
         sm = StateMachine(outcomes=[SUCCEED, ABORT, CANCEL])
 
-        # START ステート → 最初の Skill に遷移
+        # 1) Start state -> Bridge state (RAG check)
         sm.add_state(
             name="START",
             state=SkillStart(node=self),
-            transitions={SUCCEED: f"S0_{flow[0]['name']}" if flow else SUCCEED},
+            transitions={SUCCEED: "RAGBridge" if flow else SUCCEED},
+        )
+
+        # 2) Bridge state (RAG check) -> first skill or SUCCEED
+        sm.add_state(
+            name="RAGBridge",
+            state=SkillRAGBridge(node=self),
+            transitions={
+                SUCCEED: f"S0_{flow[0]['name']}" if flow else SUCCEED,
+                ABORT: ABORT,
+                CANCEL: CANCEL,
+            },
         )
 
         flow_names = [step["name"] for step in flow]
@@ -170,7 +210,6 @@ class PRSMNode(Node):
 
             state_id = f"S{i}_{name}"
 
-            # ★ 重要: このステートが flow の何番目かを渡す
             # Skill 側の __init__(node, step_index=..., **kwargs) で受ける想定
             args["step_index"] = i
 
