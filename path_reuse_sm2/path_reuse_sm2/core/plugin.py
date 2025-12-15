@@ -22,6 +22,7 @@ def discover(package: str = "path_reuse_sm2.skills") -> None:
     try:
         pkg = importlib.import_module(package)
     except Exception:
+        print(f"[discover] failed: {m.name}: {e}")
         return
     if not hasattr(pkg, "__path__"):
         return
