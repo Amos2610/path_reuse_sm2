@@ -4,7 +4,7 @@
 Move Skill: Move to target joints or pose
 """
 from yasmin.state import State
-from yasmin_ros.basic_outcomes import SUCCEED, ABORT
+from yasmin_ros.basic_outcomes import SUCCEED, ABORT, CANCEL
 from yasmin.state_machine import StateMachine
 from path_reuse_sm2.core.plugin import skill
 
@@ -14,7 +14,7 @@ from path_reuse_sm2.skills.state.move import Move
 @skill("SkillMove")
 class SkillMove(State):
     def __init__(self, node, **kwargs):
-        super().__init__(outcomes=[SUCCEED])
+        super().__init__(outcomes=[SUCCEED, ABORT, CANCEL])
         self.node = node
         move_state = Move(node)
         self._sm = StateMachine(outcomes=["success", "except"])

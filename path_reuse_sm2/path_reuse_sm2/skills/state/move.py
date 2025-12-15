@@ -2,29 +2,34 @@
 # -*- coding: utf-8 -*-
 
 from typing import Any, Dict
-from path_reuse_sm2.core.state import SkillState
+from yasmin.state import State
+from path_reuse_sm2.core.xarm_utils import XArmUtilsWrapper
 
 
-class Move(SkillState):
+class Move(State):
     def __init__(self, node):
-        super().__init__(node, name="Move", outcomes=["success"])
+        super().__init__(outcomes=["success", "except"])
+        XArmUtilsWrapper.__init__(self)
+        self.pr_node = node
 
-    def run(self, bb: Dict[str, Any], **_) -> str:
-        self.node.get_logger().info("Move state executed.")
-        # parameter 取得
-        self.declare_parameter("move_target_joints", None)
-        self.declare_parameter("move_target_pose", None)
-        target_joints = self.node.get_parameter("move_target_joints").get_parameter_value().string_value
-        target_pose = self.node.get_parameter("move_target_pose").get_parameter_value().string_value
-        self.node.get_logger().info(f"Moving to pose: {target_pose}, joints: {target_joints}")
+    def execute(self, blackboard=None, **_) -> str:
+        self.pr_node.get_logger().info("Move state executed.")
+        # DEBUG
+        container_pose = [2.268928025, 0.8203047475, -1.8675022975, 0.0, 1.0471975500000001, 0.593411945]  # TODO: 仮の値
+        self.xarm.set_planning_pipeline("ompl")
 
-        # target_joints（C-space）があればそちらを優先
-        if target_joints is not None and target_joints != "":
-            self.node.get_logger().info(f"Moving to target joints: {target_joints}")
-            # ここに関節位置への移動コードを追加
-        elif target_pose is not None and target_pose != "":
-            self.node.get_logger().info(f"Moving to target pose: {target_pose}")
-            # ここにエンドエフェクタ位置への移動コードを追加
+        self.xarm.set_joint_value_target(container_pose)
+        self.pr_node.get_logger().info("Moved to obj_pose for debug.")
+        success, plan, _, _ = self.xarm.plan()
+        if success:
+            self.pr_node.get_logger().info("Planning to obj_pose succeeded.")
+            exec_success = self.xarm.execute()
+            if exec_success:
+                self.pr_node.get_logger().info("Execution to obj_pose succeeded.")
+            else:
+                self.pr_node.get_logger().error("Execution to obj_pose failed.")
         else:
-            self.node.get_logger().warn("No target joints or pose specified. Skipping move.")
+            self.pr_node.get_logger().error("Planning to obj_pose failed.")
+
+        setattr(blackboard, "container_pose", container_pose) #TODO 一旦C空間のままセット
         return "success"
