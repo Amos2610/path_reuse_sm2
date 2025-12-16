@@ -10,14 +10,15 @@ from path_reuse_sm2.core.xarm_utils import XArmUtilsWrapper
 
 
 class Grasp(XArmUtilsWrapper, State):
-    def __init__(self, node, approach_margin=0.01):
+    def __init__(self, node, **kwargs):
         State.__init__(self, outcomes=["success", "loop", "except"])
         XArmUtilsWrapper.__init__(self)
         self.pr_node = node
         self.pr_client = PathSeedClient()
-        self.approach_margin = approach_margin
+        self.workpiece = kwargs.get("workpiece", "")
+        self.path_seed_path = kwargs.get("path_seed_path", "")
 
-        # ROS1互換フィールド名
+        # variables
         self.try_count: int = 0
         self.pipeline: str = "stomp"  # "stomp" or "ompl"
         self.params: Dict[str, Any] = {}  # ROS1の~Params代替。必要ならbb/ファイルから供給
@@ -96,30 +97,30 @@ class Grasp(XArmUtilsWrapper, State):
             return False
     
     def set_start_and_goal_joint_values(self, blackboard: Any) -> Optional[Tuple[List[float], List[float]]]:
-        obj_pose = getattr(blackboard, "obj_pose", None)
-        if obj_pose is None:
-            self.pr_node.get_logger().error("Blackboard missing 'obj_pose'.")
+        obj_joints = getattr(blackboard, "obj_joints", None)
+        if obj_joints is None:
+            self.pr_node.get_logger().error("Blackboard missing 'obj_joints'.")
             return None
         
-        container_pose = getattr(blackboard, "container_pose", None)
-        if container_pose is None:
-            self.pr_node.get_logger().error("Blackboard missing 'container_pose'.")
+        move_joints = getattr(blackboard, "move_joints", None)
+        if move_joints is None:
+            self.pr_node.get_logger().error("Blackboard missing 'move_joints'.")
             return None
         
-        #TODO: ここでcontainer_poseからTF変換，逆運動学を使ってstart_joint_valuesを計算する
-        # 一旦container_poseのまま使う
-        start_joint_values = container_pose
+        #TODO: ここでmove_jointsからTF変換，逆運動学を使ってstart_joint_valuesを計算する
+        # 一旦move_jointsのまま使う
+        start_joint_values = move_joints
         self.pr_node.get_logger().info(f"Grasp start joint values: {start_joint_values}")
         
-        #TODO: ここでobj_poseからTF変換，逆運動学を使ってgoal_joint_valuesを計算する
-        # 一旦obj_poseのまま使う
-        goal_joint_values = obj_pose
+        #TODO: ここでobj_jointsからTF変換，逆運動学を使ってgoal_joint_valuesを計算する
+        # 一旦obj_jointsのまま使う
+        goal_joint_values = obj_joints
         self.pr_node.get_logger().info(f"Grasp goal joint values: {goal_joint_values}")
         return start_joint_values, goal_joint_values
 
     def execute(self, blackboard=None):
         self.pr_node.get_logger().info("------------------------------------------------")
-        self.pr_node.get_logger().info(f"Grasp state executed. approach_margin={self.approach_margin}")
+        self.pr_node.get_logger().info(f"Grasp state executed.")
         self.pr_node.get_logger().info("------------------------------------------------")
         self._current_blackboard = blackboard
         self.phase = self.pr_node.get_parameter("grasp_phase").value

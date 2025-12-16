@@ -16,10 +16,12 @@ class SkillMove(State):
     def __init__(self, node, **kwargs):
         super().__init__(outcomes=[SUCCEED, ABORT, CANCEL])
         self.node = node
-        move_state = Move(node)
+        move_state = Move(node, **kwargs)
         self._sm = StateMachine(outcomes=["success", "except"])
         self._sm.add_state("MOVE", move_state,
                         transitions={"success": "success", "except": "except"})
+        self.node.get_logger().info(f"[SkillMove] Initialized with kwargs: {kwargs}")
+        # [SkillMove] Initialized with kwargs: {'target_location': 'desk', 'workpiece': '', 'joints': [3.1415, 0.0, -1.5708, 0.0, 1.5708, 0.0], 'pose': [0.5, 0.0, 0.75, 0.0, 0.0, 0.0, 1.0], 'path_seed_path': '', 'step_index': 0}
 
     def execute(self, blackboard):
         self.node.get_logger().info("Executing SkillMove...")

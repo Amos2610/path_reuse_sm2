@@ -18,7 +18,7 @@ class SkillFindObj(State):
     def __init__(self, node, **kwargs):
         super().__init__(outcomes=[SUCCEED, ABORT, CANCEL])
         self.node = node
-        find_obj = FindObj(node)
+        find_obj = FindObj(node, **kwargs)
         self._sm = StateMachine(outcomes=["success", "except"])
         self._sm.add_state("FIND_OBJ", find_obj,
                         transitions={"success": "success", "except": "except"})        

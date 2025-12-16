@@ -8,7 +8,7 @@ from path_reuse_method.path_seed_client import PathSeedClient
 
 
 class UpdatePathSeed(State):
-    def __init__(self, node, margin_mm: float = 5.0, type: str = "example"):
+    def __init__(self, node, type: str = "grasp", **kwargs):
         super().__init__(outcomes=["success", "except"])
         self.pr_node = node
         self.type = type

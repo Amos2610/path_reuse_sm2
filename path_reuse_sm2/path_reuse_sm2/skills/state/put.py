@@ -11,7 +11,7 @@ from path_reuse_sm2.core.xarm_utils import XArmUtilsWrapper
 
 
 class Put(XArmUtilsWrapper, State):
-    def __init__(self, node, approach_margin=0.01):
+    def __init__(self, node, **kwargs):
         State.__init__(self, outcomes=["success", "loop", "except"])
         XArmUtilsWrapper.__init__(self)
         self.pr_node = node
@@ -24,7 +24,11 @@ class Put(XArmUtilsWrapper, State):
             self.execute_trajectory_callback
         )
         self._last_executed_traj_msg: Optional[JointTrajectory] = None
-        self.approach_margin = approach_margin
+        self.target_location = kwargs.get("target_location", "")
+        self.joints= kwargs.get("joints", [])
+        self.pose = kwargs.get("pose", [])
+        self.path_seed_path = kwargs.get("path_seed_path", "")
+        self.step_index = kwargs.get("step_index", 0)
 
         # ROS1互換フィールド名
         self.try_count: int = 0
@@ -120,30 +124,44 @@ class Put(XArmUtilsWrapper, State):
             return False
 
     def set_start_and_goal_joint_values(self, blackboard: Any) -> Optional[Tuple[List[float], List[float]]]:
-        obj_pose = getattr(blackboard, "obj_pose", None)
-        if obj_pose is None:
-            self.pr_node.get_logger().error("Blackboard missing 'obj_pose'.")
+        obj_joints = getattr(blackboard, "obj_joints", None)
+        if obj_joints is None:
+            self.pr_node.get_logger().error("Blackboard missing 'obj_joints'.")
             return None
         
-        container_pose = getattr(blackboard, "container_pose", None)
-        if container_pose is None:
-            self.pr_node.get_logger().error("Blackboard missing 'container_pose'.")
+        # container_joints = getattr(blackboard, "container_joints", None)
+        container_joints = []
+        # jointsの値がある場合は優先して使用する
+        if self.joints:
+            self.pr_node.get_logger().info(f"Moving to target joints from RAG: {self.joints}")
+            container_joints = self.joints
+        # jointsの値は空でposeの値がある場合はposeをIK変換して使用する
+        elif not self.joints and self.pose:
+            self.pr_node.get_logger().info(f"Moving to target pose from RAG: {self.pose}")
+            container_joints = getattr(blackboard, "container_joints", None)
+            # TODO: IK計算して関節角度に変換する処理を実装する
+            # container_joints = self.convert_pose_to_joints(self.pose)
+        else:
+            container_joints = [2.268928025, 0.8203047475, -1.8675022975, 0.0, 1.0471975500000001, 0.593411945]
+
+        if container_joints is None:
+            self.pr_node.get_logger().error("Blackboard missing 'container_joints'.")
             return None
         
-        #TODO: ここでcontainer_poseからTF変換，逆運動学を使ってstart_joint_valuesを計算する
-        # 一旦container_poseのまま使う
-        goal_joint_values = container_pose
+        #TODO: ここでcontainer_jointsからTF変換，逆運動学を使ってstart_joint_valuesを計算する
+        # 一旦container_jointsのまま使う
+        goal_joint_values = container_joints
         self.pr_node.get_logger().info(f"Put goal joint values: {goal_joint_values}")
         
-        #TODO: ここでobj_poseからTF変換，逆運動学を使ってgoal_joint_valuesを計算する
-        # 一旦obj_poseのまま使う
-        start_joint_values = obj_pose
+        #TODO: ここでobj_jointsからTF変換，逆運動学を使ってgoal_joint_valuesを計算する
+        # 一旦obj_jointsのまま使う
+        start_joint_values = obj_joints
         self.pr_node.get_logger().info(f"Put start joint values: {start_joint_values}")
         return start_joint_values, goal_joint_values
 
     def execute(self, blackboard=None):
         self.pr_node.get_logger().info("------------------------------------------------")
-        self.pr_node.get_logger().info(f"Put state executed. approach_margin={self.approach_margin}")
+        self.pr_node.get_logger().info(f"Put state executed.")
         self.pr_node.get_logger().info("------------------------------------------------")
         self._current_blackboard = blackboard
         self.phase = self.pr_node.get_parameter("put_phase").value

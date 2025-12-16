@@ -104,7 +104,8 @@ class PRSMNode(Node):
         for i, s in enumerate(skills):
             self.get_logger().info(
                 f"    Skill[{i}] {s.skill_name} "
-                f"(target={s.target_location}, workpiece={s.workpiece}, "
+                f"(target_location={s.target_location}, workpiece={s.workpiece}, "
+                f"joints={s.joints}, pose={s.pose}, "
                 f"path_seed_path={s.path_seed_path})"
             )
 
@@ -114,7 +115,13 @@ class PRSMNode(Node):
         for s in skills:
             step = {
                 "name": s.skill_name,
-                "args": {},  # ここに将来 skill ごとの追加 args を詰めてもよい
+                "args": {
+                    "target_location": s.target_location,
+                    "workpiece": s.workpiece,
+                    "joints": list(s.joints),
+                    "pose": list(s.pose),
+                    "path_seed_path": s.path_seed_path,
+                },
             }
             flow.append(step)
             self.get_logger().info(

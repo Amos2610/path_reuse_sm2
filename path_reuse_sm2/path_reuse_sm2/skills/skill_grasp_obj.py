@@ -19,8 +19,8 @@ class SkillGraspObj(State):
     def __init__(self, node, **kwargs):
         super().__init__(outcomes=[SUCCEED, ABORT, CANCEL])
         self.node = node
-        grasp = Grasp(node, approach_margin=kwargs.get("grasp_approach_margin", 0.01))
-        update_path_seed = UpdatePathSeed(node, margin_mm=kwargs.get("seed_margin_mm", 5.0), type="grasp")
+        grasp = Grasp(node, **kwargs)
+        update_path_seed = UpdatePathSeed(node, type="grasp", **kwargs)
 
         self._sm = StateMachine(outcomes=["success", "except"])
         self._sm.add_state("GRASP", grasp,
@@ -36,8 +36,8 @@ class SkillGraspObj(State):
         )
 
     def get_blackboard(self, bb) -> bool:
-        if not hasattr(bb, "obj_pose") or bb.obj_pose is None:
-            self.node.get_logger().error("Blackboard missing 'obj_pose'.")
+        if not hasattr(bb, "obj_joints") or bb.obj_joints is None:
+            self.node.get_logger().error("Blackboard missing 'obj_joints'.")
             return False
         return True        
 
