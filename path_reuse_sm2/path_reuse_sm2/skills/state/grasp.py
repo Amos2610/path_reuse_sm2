@@ -127,8 +127,6 @@ class Grasp(XArmUtilsWrapper, State):
         self.pr_node.get_logger().info(f"Current phase: {self.phase}")
         # env = blackboard.get("env", {})
         # pipeline = blackboard.get("pipeline", "stomp")
-        # self.xarm.set_planning_pipeline("ompl")
-        self.xarm.set_planning_pipeline("stomp")
 
         start_joint_values, goal_joint_values = self.set_start_and_goal_joint_values(blackboard)
         if not goal_joint_values:
@@ -139,6 +137,7 @@ class Grasp(XArmUtilsWrapper, State):
         use_pathseed = self.pr_node.get_parameter("use_pathseed").value
         self.pr_node.get_logger().info(f"use_pathseed: {use_pathseed}")
         if use_pathseed:
+            self.xarm.set_planning_pipeline("stomp")
             # PathSeedからSTOMP用軌道をセット
             self.xarm.set_move_group_parameter("stomp.use_custom_trajectory", True)
             self.pr_node.get_logger().info(f"Grasp phase: {self.phase}")
@@ -160,6 +159,8 @@ class Grasp(XArmUtilsWrapper, State):
             if not success_generated:
                 self.pr_node.get_logger().error("Failed to generate STOMP path from PathSeed.")
                 return "except"
+        else:
+            self.xarm.set_planning_pipeline("ompl")
         
         ##############################
         ### Planning and Execution ###
@@ -177,6 +178,7 @@ class Grasp(XArmUtilsWrapper, State):
             if self._current_blackboard is not None:
                 setattr(self._current_blackboard, 'grasp_trajectory', deepcopy(plan))
                 self.pr_node.get_logger().info(f"[Grasp] stored grasp_trajectory to BB (points={len(plan.points)})")
+            self.xarm.gripper_close()
             return "success"
         else:
             self.pr_node.get_logger().warn("No valid plan found, retrying...")

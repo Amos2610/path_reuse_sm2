@@ -74,15 +74,16 @@ class PRSMNode(Node):
     def _declare_params(self) -> None:
         """本ノードが受け取るROSパラメータを宣言する。"""
         # flow: ["SkillGraspObj", ...] または [{"name": "SkillGraspObj", "args": {...}}, ...]
-        self.declare_parameter("flow", ["SkillGraspObj", "SkillPutObj"])
+        # self.declare_parameter("flow", ["SkillMove", "SkillFindObj", "SkillGraspObj", "SkillPutObj"])
+        self.declare_parameter("flow", ["SkillMove" "SkillFindObj"])
         # flow_args_json: {"SkillGraspObj": {"speed": 0.5}, "SkillPutObj": {"place": "binA"}} のような追加引数
         self.declare_parameter("flow_args_json", "")
         # start_delay: Viewer購読準備のための起動遅延（秒）
         self.declare_parameter("start_delay", 0.5)
         # loop: flowの最後→最初に戻る（Trueでループ、Falseで一回きり）
-        self.declare_parameter("loop", True)
+        self.declare_parameter("loop", False)
         # use_pathseed: PathSeedを使うかどうか
-        self.declare_parameter("use_pathseed", True)
+        self.declare_parameter("use_pathseed", False)
         # pathseed_grasp: Grasp用PathSeedファイルパス
         self.declare_parameter("pathseed_grasp", "")
         # pathseed_put: Put用PathSeedファイルパス

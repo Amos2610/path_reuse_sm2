@@ -142,7 +142,10 @@ class Put(XArmUtilsWrapper, State):
             # TODO: IK計算して関節角度に変換する処理を実装する
             # container_joints = self.convert_pose_to_joints(self.pose)
         else:
-            container_joints = [2.268928025, 0.8203047475, -1.8675022975, 0.0, 1.0471975500000001, 0.593411945]
+            # container_joints = [2.268928025, 0.8203047475, -1.8675022975, 0.0, 1.0471975500000001, 0.593411945]
+            # deg[31, 56, -75, -143, 73, 166]
+            # rad[0.5410520681182421, 0.9773843811168246, -1.3089969389957472, -2.495821867509334, 1.2740903539551310, 2.897246810206786]
+            container_joints = [0.5410520681182421, 0.9773843811168246, -1.3089969389957472, -2.495821867509334, 1.2740903539551310, 2.897246810206786]
 
         if container_joints is None:
             self.pr_node.get_logger().error("Blackboard missing 'container_joints'.")
@@ -167,8 +170,6 @@ class Put(XArmUtilsWrapper, State):
         self.phase = self.pr_node.get_parameter("put_phase").value
         # env = blackboard.get("env", {})
         # pipeline = blackboard.get("pipeline", "stomp")
-        # self.xarm.set_planning_pipeline("ompl")
-        self.xarm.set_planning_pipeline("stomp")
         start_joint_values, goal_joint_values = self.set_start_and_goal_joint_values(blackboard)
         if not goal_joint_values:
             self.pr_node.get_logger().error("Failed to set joint value target.")
@@ -177,6 +178,7 @@ class Put(XArmUtilsWrapper, State):
         # use_pathseed = True  # TODO: blackboard等で切り替え可能に
         use_pathseed = self.pr_node.get_parameter("use_pathseed").value
         if use_pathseed:
+            self.xarm.set_planning_pipeline("stomp")
             # PathSeedからSTOMP用軌道をセット
             self.xarm.set_move_group_parameter("stomp.use_custom_trajectory", True)
             self.pr_node.get_logger().info(f"Put phase: {self.phase}")
@@ -198,6 +200,8 @@ class Put(XArmUtilsWrapper, State):
             if not success_generated:
                 self.pr_node.get_logger().error("Failed to generate STOMP path from PathSeed.")
                 return "except"
+        else:
+            self.xarm.set_planning_pipeline("ompl")
 
         ##############################
         ### Planning and Execution ###
@@ -215,6 +219,7 @@ class Put(XArmUtilsWrapper, State):
             if self._current_blackboard is not None:
                 setattr(self._current_blackboard, 'put_trajectory', deepcopy(plan))
                 self.pr_node.get_logger().info(f"[Put] stored put_trajectory to BB (points={len(plan.points)})")
+                self.xarm.gripper_open()
             return "success"
         else:
             self.pr_node.get_logger().warn("No valid plan found, retrying...")

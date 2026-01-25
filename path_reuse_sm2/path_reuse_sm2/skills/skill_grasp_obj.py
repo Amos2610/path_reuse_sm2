@@ -19,15 +19,19 @@ class SkillGraspObj(State):
     def __init__(self, node, **kwargs):
         super().__init__(outcomes=[SUCCEED, ABORT, CANCEL])
         self.node = node
+        use_pathseed = self.node.get_parameter("use_pathseed").value
         grasp = Grasp(node, **kwargs)
         update_path_seed = UpdatePathSeed(node, type="grasp", **kwargs)
 
         self._sm = StateMachine(outcomes=["success", "except"])
-        self._sm.add_state("GRASP", grasp,
-                        transitions={"success": "UPDATE_PATHSEED", "loop": "GRASP", "except": "except"})
-        self._sm.add_state("UPDATE_PATHSEED", update_path_seed,
-                        transitions={"success": "success", "except": "except"})
-        
+        if use_pathseed is True:
+            self._sm.add_state("GRASP", grasp,
+                            transitions={"success": "UPDATE_PATHSEED", "loop": "GRASP", "except": "except"})
+            self._sm.add_state("UPDATE_PATHSEED", update_path_seed,
+                            transitions={"success": "success", "except": "except"})
+        else:
+            self._sm.add_state("GRASP", grasp,
+                            transitions={"success": "success", "loop": "GRASP", "except": "except"})
         self._viewer_pub = YasminViewerPub(
             fsm_name="skill_grasp_obj_viewer",
             node=self.node,

@@ -21,7 +21,7 @@ class SkillFindObj(State):
         find_obj = FindObj(node, **kwargs)
         self._sm = StateMachine(outcomes=["success", "except"])
         self._sm.add_state("FIND_OBJ", find_obj,
-                        transitions={"success": "success", "except": "except"})        
+                        transitions={"success": "success", "loop": "FIND_OBJ", "except": "except"})        
 
     def execute(self, blackboard: Dict[str, Any]) -> str:
         self.node.get_logger().info("Executing SkillFindObj...")

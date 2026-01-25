@@ -19,15 +19,19 @@ class SkillPutObj(State):
     def __init__(self, node, **kwargs):
         super().__init__(outcomes=[SUCCEED, ABORT, CANCEL])
         self.node = node
+        use_pathseed = self.node.get_parameter("use_pathseed").value
         put = Put(node, **kwargs)
         update_path_seed = UpdatePathSeed(node, type="put", **kwargs)
 
         self._sm = StateMachine(outcomes=["success", "except"])
-        self._sm.add_state("PUT", put,
-                        transitions={"success": "UPDATE_PATHSEED", "loop": "PUT", "except": "except"})
-        self._sm.add_state("UPDATE_PATHSEED", update_path_seed,
-                        transitions={"success": "success", "except": "except"})
-        
+        if use_pathseed is True:
+            self._sm.add_state("PUT", put,
+                            transitions={"success": "UPDATE_PATHSEED", "loop": "PUT", "except": "except"})
+            self._sm.add_state("UPDATE_PATHSEED", update_path_seed,
+                            transitions={"success": "success", "except": "except"})
+        else:
+            self._sm.add_state("PUT", put,
+                            transitions={"success": "success", "loop": "PUT", "except": "except"})
         # self._viewer_pub = YasminViewerPub(
         #     fsm_name="skill_put_obj_viewer",
         #     node=self.node,
