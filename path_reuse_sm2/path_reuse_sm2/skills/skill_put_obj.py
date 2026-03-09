@@ -19,6 +19,7 @@ class SkillPutObj(State):
     def __init__(self, node, **kwargs):
         super().__init__(outcomes=[SUCCEED, ABORT, CANCEL])
         self.node = node
+        self.kwargs = kwargs
         use_pathseed = self.node.get_parameter("use_pathseed").value
         put = Put(node, **kwargs)
         update_path_seed = UpdatePathSeed(node, type="put", **kwargs)
@@ -39,8 +40,23 @@ class SkillPutObj(State):
         #     fsm=self._sm
         # )
 
+    def get_blackboard(self, bb) -> bool:
+        if not hasattr(bb, "obj_joints") or bb.obj_joints is None:
+            # RAG から直接 joints が送られているか確認
+            joints_from_rag = self.kwargs.get("joints")
+            if joints_from_rag and len(joints_from_rag) > 0:
+                self.node.get_logger().info(f"[SkillPutObj] 'obj_joints' missing on BB. Using joints from RAG: {joints_from_rag}")
+                setattr(bb, "obj_joints", joints_from_rag)
+                return True
+            
+            self.node.get_logger().error("Blackboard missing 'obj_joints' and no fallback joints in RAG args.")
+            return False
+        return True        
+
     def execute(self, blackboard: Dict[str, Any]) -> str:
         self.node.get_logger().info("Executing SkillPutObj...")
+        if not self.get_blackboard(blackboard):
+            return ABORT
         outcome = self._sm.execute(blackboard)
         if outcome == "success":
             return SUCCEED

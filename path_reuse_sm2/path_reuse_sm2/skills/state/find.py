@@ -1,8 +1,6 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-import numpy as np
+# import numpy as np
 import time
-from rclpy.qos import qos_profile_sensor_data
+# from rclpy.qos import qos_profile_sensor_data # Already has delay import below or not needed for now
 
 import rclpy
 from rclpy.duration import Duration
@@ -21,13 +19,13 @@ from typing import Any, Optional, Tuple
 from yasmin.state import State
 from path_reuse_method.path_seed_client import PathSeedClient
 from path_reuse_sm2.core.xarm_utils import XArmUtilsWrapper
-from ultralytics import YOLO
+# from ultralytics import YOLO
 #TODO: Image型をImport（sensors_msgs/msg）
 from sensor_msgs.msg import Image, CameraInfo
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 #TODO: cv2 cv_brigdeをImport
-import cv2
-from cv_bridge import CvBridge, CvBridgeError
+# import cv2
+# from cv_bridge import CvBridge, CvBridgeError
 
 
 class FindObj(State):
@@ -60,18 +58,18 @@ class FindObj(State):
         self.conf_th = float(kwargs.get("conf_th", 0.25)) # 信頼度
         self.iou_th = float(kwargs.get("iou_th", 0.45))
 
-        self.model = YOLO(self.yolo_model_path) # yolo26.pt
-        self.pr_node.get_logger().info(f"[FindObj] YOLO model loaded: {self.yolo_model_path}")
+        # self.model = YOLO(self.yolo_model_path) # yolo26.pt
+        # self.pr_node.get_logger().info(f"[FindObj] YOLO model loaded: {self.yolo_model_path}")
 
         # Subscribers
         #TODO: /camera/camera/color/image_raw のSubscriberを書く
         # -----------------------
         # Subscriber: /camera/camera/color/image_raw
         # -----------------------
+        from rclpy.qos import qos_profile_sensor_data
         qos = qos_profile_sensor_data
 
-
-        self.bridge = CvBridge()
+        # self.bridge = CvBridge()
         self.image_msg: Optional[Image] = None
         self.depth_msg: Optional[Image] = None 
         self.cv2_image = None  # np.ndarray (BGR)

@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from yasmin.state import State
 from path_reuse_method.path_seed_client import PathSeedClient
 from path_reuse_sm2.core.xarm_utils import XArmUtilsWrapper
+from path_reuse_sm2.core.path_registry import PathRegistry
 
 
 class Grasp(XArmUtilsWrapper, State):
@@ -15,8 +16,18 @@ class Grasp(XArmUtilsWrapper, State):
         XArmUtilsWrapper.__init__(self)
         self.pr_node = node
         self.pr_client = PathSeedClient()
+        self.phase = kwargs.get("phase", "")
         self.workpiece = kwargs.get("workpiece", "")
         self.path_seed_path = kwargs.get("path_seed_path", "")
+        self.obj_joints = kwargs.get("joints", [])
+
+        # Path Registry
+        self.source_id = kwargs.get("source_location", "HOME")
+        # Grasp は (workpiece の場所, workpiece_id) の組み合わせで管理
+        self.target_id = kwargs.get("workpiece") or kwargs.get("target_location") or ""
+        self.skill_name = kwargs.get("skill_name", "SkillGraspObj")
+        registry_path = self.pr_node.get_parameter("pathseed_registry_path").value
+        self.registry = PathRegistry(registry_path)
 
         # variables
         self.try_count: int = 0
@@ -123,6 +134,8 @@ class Grasp(XArmUtilsWrapper, State):
         self.pr_node.get_logger().info(f"Grasp state executed.")
         self.pr_node.get_logger().info("------------------------------------------------")
         self._current_blackboard = blackboard
+        # Blackboardに入れとく
+        setattr(blackboard, "obj_joints", self.obj_joints)
         self.phase = self.pr_node.get_parameter("grasp_phase").value
         self.pr_node.get_logger().info(f"Current phase: {self.phase}")
         # env = blackboard.get("env", {})
@@ -141,7 +154,22 @@ class Grasp(XArmUtilsWrapper, State):
             # PathSeedからSTOMP用軌道をセット
             self.xarm.set_move_group_parameter("stomp.use_custom_trajectory", True)
             self.pr_node.get_logger().info(f"Grasp phase: {self.phase}")
-            if self.phase == "Initial_Phase":
+            # 1. Registry から検索
+            reg_path = self.registry.get_path_seed(self.source_id, self.target_id, self.skill_name)
+            
+            if reg_path:
+                self.pr_node.get_logger().info(f"[Grasp] Found entry in registry: {reg_path}")
+                # "ex1_..." 形式なら prefix を補完
+                if not reg_path.startswith("src/") and not reg_path.startswith("/"):
+                    pathseed_file = "src/path_reuse_method/pathseeds/Library/" + reg_path
+                else:
+                    pathseed_file = reg_path
+            # 2. RAG からの直接指定
+            elif self.path_seed_path:
+                self.pr_node.get_logger().info(f"[Grasp] Using path_seed_path from RAG: {self.path_seed_path}")
+                pathseed_file = self.path_seed_path
+            # 3. ROS パラメータ（Phase に応じる）
+            elif self.phase == "Initial_Phase":
                 pathseed_file = self.pr_node.get_parameter("pathseed_grasp").value
             elif self.phase == "Imprementation_Phase":
                 default_pathseed_file = self.pr_node.get_parameter("pathseed_grasp").value

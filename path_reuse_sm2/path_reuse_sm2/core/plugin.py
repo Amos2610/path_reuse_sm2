@@ -21,15 +21,18 @@ def discover(package: str = "path_reuse_sm2.skills") -> None:
     """skills/ 配下を import して @skill 登録を発火"""
     try:
         pkg = importlib.import_module(package)
-    except Exception:
-        print(f"[discover] failed: {m.name}: {e}")
+    except Exception as e:
+        print(f"[discover] failed to import package {package}: {e}")
         return
     if not hasattr(pkg, "__path__"):
         return
     for m in pkgutil.iter_modules(pkg.__path__, pkg.__name__ + "."):
         try:
             importlib.import_module(m.name)
-        except Exception:
+        except Exception as e:
+            print(f"[discover] failed to import module {m.name}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
 
 def get(name: str) -> Type[Skill]:

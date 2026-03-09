@@ -8,6 +8,7 @@ from trajectory_msgs.msg import JointTrajectory
 from moveit_msgs.action import ExecuteTrajectory
 from path_reuse_method.path_seed_client import PathSeedClient
 from path_reuse_sm2.core.xarm_utils import XArmUtilsWrapper
+from path_reuse_sm2.core.path_registry import PathRegistry
 
 
 class Put(XArmUtilsWrapper, State):
@@ -15,6 +16,7 @@ class Put(XArmUtilsWrapper, State):
         State.__init__(self, outcomes=["success", "loop", "except"])
         XArmUtilsWrapper.__init__(self)
         self.pr_node = node
+        self.kwargs = kwargs
         self.pr_client = PathSeedClient()
         # ActionServerの初期化
         self._action_server = ActionServer(
@@ -29,6 +31,13 @@ class Put(XArmUtilsWrapper, State):
         self.pose = kwargs.get("pose", [])
         self.path_seed_path = kwargs.get("path_seed_path", "")
         self.step_index = kwargs.get("step_index", 0)
+
+        # Path Registry
+        self.source_id = kwargs.get("source_location", "UNKNOWN")
+        self.target_id = kwargs.get("target_location") or "CONTAINER"
+        self.skill_name = kwargs.get("skill_name", "SkillPutObj")
+        registry_path = self.pr_node.get_parameter("pathseed_registry_path").value
+        self.registry = PathRegistry(registry_path)
 
         # ROS1互換フィールド名
         self.try_count: int = 0
@@ -142,10 +151,7 @@ class Put(XArmUtilsWrapper, State):
             # TODO: IK計算して関節角度に変換する処理を実装する
             # container_joints = self.convert_pose_to_joints(self.pose)
         else:
-            # container_joints = [2.268928025, 0.8203047475, -1.8675022975, 0.0, 1.0471975500000001, 0.593411945]
-            # deg[31, 56, -75, -143, 73, 166]
-            # rad[0.5410520681182421, 0.9773843811168246, -1.3089969389957472, -2.495821867509334, 1.2740903539551310, 2.897246810206786]
-            container_joints = [0.5410520681182421, 0.9773843811168246, -1.3089969389957472, -2.495821867509334, 1.2740903539551310, 2.897246810206786]
+            container_joints = [2.268928025, 0.8203047475, -1.8675022975, 0.0, 1.0471975500000001, 0.593411945]
 
         if container_joints is None:
             self.pr_node.get_logger().error("Blackboard missing 'container_joints'.")
@@ -167,6 +173,14 @@ class Put(XArmUtilsWrapper, State):
         self.pr_node.get_logger().info(f"Put state executed.")
         self.pr_node.get_logger().info("------------------------------------------------")
         self._current_blackboard = blackboard
+        
+        # Blackboard に obj_joints がない場合は、自身の kwargs (RAG由来) から補完を試みる
+        if blackboard and (not hasattr(blackboard, "obj_joints") or blackboard.obj_joints is None):
+            joints_from_rag = self.kwargs.get("joints")
+            if joints_from_rag:
+                self.pr_node.get_logger().info(f"[Put] Syncing obj_joints to BB from RAG args: {joints_from_rag}")
+                setattr(blackboard, "obj_joints", joints_from_rag)
+        
         self.phase = self.pr_node.get_parameter("put_phase").value
         # env = blackboard.get("env", {})
         # pipeline = blackboard.get("pipeline", "stomp")
@@ -182,11 +196,26 @@ class Put(XArmUtilsWrapper, State):
             # PathSeedからSTOMP用軌道をセット
             self.xarm.set_move_group_parameter("stomp.use_custom_trajectory", True)
             self.pr_node.get_logger().info(f"Put phase: {self.phase}")
-            if self.phase == "Initial_Phase":
+            # 1. Registry から検索
+            reg_path = self.registry.get_path_seed(self.source_id, self.target_id, self.skill_name)
+            
+            if reg_path:
+                self.pr_node.get_logger().info(f"[Put] Found entry in registry: {reg_path}")
+                # "ex1_..." 形式なら prefix を補完
+                if not reg_path.startswith("src/") and not reg_path.startswith("/"):
+                    pathseed_file = "src/path_reuse_method/pathseeds/Library/" + reg_path
+                else:
+                    pathseed_file = reg_path
+            # 2. RAG からの直接指定
+            elif self.path_seed_path:
+                self.pr_node.get_logger().info(f"[Put] Using path_seed_path from RAG: {self.path_seed_path}")
+                pathseed_file = self.path_seed_path
+            # 3. ROS パラメータ（Phase に応じる）
+            elif self.phase == "Initial_Phase":
                 pathseed_file = self.pr_node.get_parameter("pathseed_put").value
             elif self.phase == "Imprementation_Phase":
                 default_pathseed_file = self.pr_node.get_parameter("pathseed_put").value
-                # updateしたパスシードはex1_pick_and_place/updated/pathseed_pick.txtに保存される想定
+                # updateしたパスシードはex1_pick_and_place/updated/pathseed_place.txtに保存される想定
                 pathseed_file = "/".join(default_pathseed_file.split("/")[:-3]) + "/updated/pathseed_place.txt"
             else:
                 self.pr_node.get_logger().error(f"Unknown phase: {self.phase}")

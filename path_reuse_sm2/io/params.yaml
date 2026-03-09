@@ -3,25 +3,26 @@ prsm_node:      # ノード名
     # ----------- 基本設定 -----------
     # flow: ["SkillMove", "SkillFindObj", "SkillGraspObj", "SkillPutObj"]  # ← スキルの実行順序
     flow: ["SkillMove", "SkillFindObj", "SkillGraspObj", "SkillPutObj"]
-    use_pathseed: false
+    use_pathseed: true
     pathseed_grasp: "src/path_reuse_method/pathseeds/Library/ex1_pick_and_place/pre_defined/pick/pathseed_pick_0529_STOMP01.txt"
     pathseed_put: "src/path_reuse_method/pathseeds/Library/ex1_pick_and_place/pre_defined/place/pathseed_place_0627_STOMP10.txt"
-    loop: false
+    pathseed_registry_path: "/home/calpis-sour/ros2_ws_docker/src/rag_factory_specific_task_agent/rag_factory_specific_task_agent/data/path_registry.json"
+    loop: true
 
-    # ----------- 例: ex1 の姿勢/目標 -----------
-    ex1:
-      Joint:
-        Start:
-          Cspace: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        PickPoint:
-          Cspace: [0.916, 0.724, -1.700, 0.001, 0.977, -0.67]
-        PlacePoint:
-          Cspace: [2.227, 0.731, -1.714, 0.002, 0.983, 0.551]
-      Tspace:
-        # [x, y, z, (wx, wy, wz, ww があれば続けて)]
-        PickPoint: [0.38435431684821103, 0.5008825942081249, 0.04786987646752977]
-        PlacePoint: [-0.38694509001475835, 0.5019096528287742, 0.04863467328972923,
-                     -0.6693602304811596, -0.7429375494123738, 0.000814498968426075, 0.0001269439897275006]
+    # # ----------- 例: ex1 の姿勢/目標 -----------
+    # ex1:
+    #   Joint:
+    #     Start:
+    #       Cspace: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    #     PickPoint:
+    #       Cspace: [0.916, 0.724, -1.700, 0.001, 0.977, -0.67]
+    #     PlacePoint: 
+    #       Cspace: [2.227, 0.731, -1.714, 0.002, 0.983, 0.551]
+    #   Tspace:
+    #     # [x, y, z, (wx, wy, wz, ww があれば続けて)]
+    #     PickPoint: [0.38435431684821103, 0.5008825942081249, 0.04786987646752977]
+    #     PlacePoint: [-0.38694509001475835, 0.5019096528287742, 0.04863467328972923,
+    #                  -0.6693602304811596, -0.7429375494123738, 0.000814498968426075, 0.0001269439897275006]
 
     # ----------- STOMP パラメータ -----------
     StompParams:

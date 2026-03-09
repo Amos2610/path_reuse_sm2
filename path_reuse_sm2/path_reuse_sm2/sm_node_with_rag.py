@@ -75,6 +75,7 @@ class PRSMNode(Node):
         # self.declare_parameter("phase", "Initial_Phase")
         self.declare_parameter("grasp_phase", "Initial_Phase")
         self.declare_parameter("put_phase", "Initial_Phase")
+        self.declare_parameter("pathseed_registry_path", "")
 
     # -------------------------
     # TaskSet サービスコールバック
@@ -101,21 +102,15 @@ class PRSMNode(Node):
         self.get_logger().info("[PRSM] 📥 Received TaskSet Request")
         self.get_logger().info(f"[PRSM]   Skill Count: {len(skills)}")
 
-        for i, s in enumerate(skills):
-            self.get_logger().info(
-                f"    Skill[{i}] {s.skill_name} "
-                f"(target_location={s.target_location}, workpiece={s.workpiece}, "
-                f"joints={s.joints}, pose={s.pose}, "
-                f"path_seed_path={s.path_seed_path})"
-            )
-
         # 1) TaskSet の Skill[] から flow を作る
         #    [{"name": "SkillFindObj", "args": {...}}, ...] の形に変換
         flow: List[Dict[str, Any]] = []
-        for s in skills:
+        for i, s in enumerate(skills):
             step = {
                 "name": s.skill_name,
                 "args": {
+                    "skill_name": s.skill_name,
+                    "source_location": s.source_location,
                     "target_location": s.target_location,
                     "workpiece": s.workpiece,
                     "joints": list(s.joints),

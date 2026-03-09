@@ -2,6 +2,7 @@
 string skill_name
 
 # IDs
+string source_location
 string target_location
 string workpiece
 

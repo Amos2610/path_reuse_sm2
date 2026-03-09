@@ -5,6 +5,7 @@ from typing import Any, Dict
 from yasmin.state import State
 from rclpy.parameter import Parameter
 from path_reuse_method.path_seed_client import PathSeedClient
+from path_reuse_sm2.core.path_registry import PathRegistry
 
 
 class UpdatePathSeed(State):
@@ -13,6 +14,24 @@ class UpdatePathSeed(State):
         self.pr_node = node
         self.type = type
         self.pr_client = PathSeedClient()
+
+        # kwargs から情報を取得
+        self.source_id = kwargs.get("source_location", "HOME")
+        # grasp の場合は workpiece を target として扱う (grasp: CTN_6 -> WP_1 の形)
+        # put の場合は target_location を target として扱う (put: WP_1 -> CTN_1 の形)
+        if type == "grasp":
+            self.target_id = kwargs.get("workpiece") or kwargs.get("target_location") or ""
+        else:
+            self.target_id = kwargs.get("target_location") or kwargs.get("workpiece") or ""
+        # SkillGraspObj / SkillPutObj に合わせる
+        default_skill_name = "SkillGraspObj" if type == "grasp" else "SkillPutObj"
+        self.action_name = kwargs.get("skill_name") or default_skill_name
+
+        # Path Registry (rag_factory_specific_task_agent の data ディレクトリを指す)
+        registry_path = self.pr_node.get_parameter("pathseed_registry_path").value
+        self.pr_node.get_logger().info(f"[UpdatePathSeed] Action: {self.action_name}, Source: {self.source_id}, Target: {self.target_id}")
+        self.pr_node.get_logger().info(f"[UpdatePathSeed] Registry path: {registry_path}")
+        self.registry = PathRegistry(registry_path)
 
     def execute(self, blackboard=None):
         self.pr_node.get_logger().info(
@@ -29,13 +48,27 @@ class UpdatePathSeed(State):
             
         pathseed_path = self.pr_node.get_parameter(f"pathseed_{self.type}").value
         self.pr_node.get_logger().info(f"Path seed path: {pathseed_path}")
+        
+        # ex1_pick_and_place/ 部分を取り出して updated フォルダを構築
+        try:
+            lib_rel = pathseed_path.split("pathseeds/Library/")[1].split("/pre_defined/")[0]
+        except IndexError:
+            self.pr_node.get_logger().error(f"[UpdatePathSeed] Unexpected pathseed_path format: {pathseed_path}")
+            return "except"
+
+        # source_id, target_id からファイル名を生成 (例: update_pick_WP1_CTN2.txt)
+        src = self.source_id.replace(" ", "_")
+        tgt = self.target_id.replace(" ", "_")
         if self.type == "grasp":
-            encode_pathseed_file = pathseed_path.split("pathseeds/Library/")[1].split("/pre_defined/")[0] + "/updated/pathseed_pick.txt"
+            filename = f"update_pick_{src}_{tgt}.txt"
         elif self.type == "put":
-            encode_pathseed_file = pathseed_path.split("pathseeds/Library/")[1].split("/pre_defined/")[0] + "/updated/pathseed_place.txt"
+            filename = f"update_place_{src}_{tgt}.txt"
         else:
             self.pr_node.get_logger().error(f"Unknown type: {self.type}")
             return "except"
+        
+        encode_pathseed_file = f"{lib_rel}/updated/{filename}"
+        self.pr_node.get_logger().info(f"[UpdatePathSeed] Saving to: {encode_pathseed_file}")
         # PathSeedClientの呼び出し
         # self, trajectory=None, trajectory_file_path=None, relative_saved_path=None):
         success = self.pr_client.send_encode_path_seed(
@@ -48,6 +81,16 @@ class UpdatePathSeed(State):
             return "except"
 
         self.pr_node.get_logger().info("Path seed updated successfully.")
+
+        # Path Registry を更新
+        self.registry.update(
+            source_id=self.source_id,
+            target_id=self.target_id,
+            action=self.action_name,
+            path_seed=encode_pathseed_file
+        )
+        self.pr_node.get_logger().info(f"[UpdatePathSeed] Registry updated: ({self.source_id} -> {self.target_id}) action={self.action_name}")
+
         self.pr_node.set_parameters(
             [Parameter(name=f"{self.type}_phase", value="Imprementation_Phase")]
         )
