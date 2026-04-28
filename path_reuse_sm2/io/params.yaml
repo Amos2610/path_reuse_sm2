@@ -6,8 +6,8 @@ prsm_node:      # ノード名
     use_pathseed: true
     pathseed_grasp: "src/path_reuse_method/pathseeds/Library/ex1_pick_and_place/pre_defined/pick/pathseed_pick_0529_STOMP01.txt"
     pathseed_put: "src/path_reuse_method/pathseeds/Library/ex1_pick_and_place/pre_defined/place/pathseed_place_0627_STOMP10.txt"
-    pathseed_registry_path: "/home/calpis-sour/ros2_ws_docker/src/rag_factory_specific_task_agent/rag_factory_specific_task_agent/data/path_registry.json"
-    loop: true
+    pathseed_registry_path: "src/rag_factory_specific_task_agent/rag_factory_specific_task_agent/data/path_registry.json"
+    loop: false
 
     # # ----------- 例: ex1 の姿勢/目標 -----------
     # ex1:

@@ -64,7 +64,7 @@ class PRSMNode(Node):
         # start_delay: Viewer購読準備のための起動遅延（秒）
         self.declare_parameter("start_delay", 0.5)
         # loop: flowの最後→最初に戻る（Trueでループ、Falseで一回きり）
-        self.declare_parameter("loop", True)
+        self.declare_parameter("loop", False)
         # use_pathseed: PathSeedを使うかどうか
         self.declare_parameter("use_pathseed", True)
         # pathseed_grasp: Grasp用PathSeedファイルパス
