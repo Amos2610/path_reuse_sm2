@@ -9,6 +9,7 @@ from moveit_msgs.action import ExecuteTrajectory
 from path_reuse_method.path_seed_client import PathSeedClient
 from path_reuse_sm2.core.xarm_utils import XArmUtilsWrapper
 from path_reuse_sm2.core.path_registry import PathRegistry
+import os
 
 
 class Put(XArmUtilsWrapper, State):
@@ -36,7 +37,12 @@ class Put(XArmUtilsWrapper, State):
         self.source_id = kwargs.get("source_location", "UNKNOWN")
         self.target_id = kwargs.get("target_location") or "CONTAINER"
         self.skill_name = kwargs.get("skill_name", "SkillPutObj")
+        
+        ws_root = self._get_workspace_root()
         registry_path = self.pr_node.get_parameter("pathseed_registry_path").value
+        if not registry_path.startswith('/'):
+            registry_path = os.path.join(ws_root, registry_path)
+            
         self.registry = PathRegistry(registry_path)
 
         # ROS1互換フィールド名
@@ -49,6 +55,19 @@ class Put(XArmUtilsWrapper, State):
         self.max_velocity_scale_default = 0.3
         self.max_accel_scale_default = 0.3
         self.planning_time_default = 2.0
+
+    def _get_workspace_root(self) -> str:
+        import os
+        try:
+            from ament_index_python.packages import get_package_prefix
+            install_prefix = get_package_prefix('path_reuse_sm2')
+            return os.path.dirname(os.path.dirname(install_prefix))
+        except Exception:
+            ament_prefix = os.environ.get('AMENT_PREFIX_PATH', '')
+            if ament_prefix:
+                first_path = ament_prefix.split(':')[0]
+                return os.path.dirname(os.path.dirname(first_path))
+            return os.getcwd()
 
     async def execute_trajectory_callback(self, goal_handle):
         self.pr_node.get_logger().info("Received ExecuteTrajectory goal.")
@@ -220,6 +239,11 @@ class Put(XArmUtilsWrapper, State):
             else:
                 self.pr_node.get_logger().error(f"Unknown phase: {self.phase}")
                 return "except"
+
+            # 絶対パスに変換
+            if not pathseed_file.startswith('/'):
+                pathseed_file = os.path.join(self._get_workspace_root(), pathseed_file)
+                
             self.pr_node.get_logger().info(f"[Put] Using pathseed file: {pathseed_file}")
             success_generated = self.generate_stomp_path_from_pathseed(
                 file_path=pathseed_file,

@@ -27,15 +27,11 @@ class Move(State):
         # jointsの値は空でposeの値がある場合はposeをIK変換して使用する
         elif not self.joints and self.pose:
             self.pr_node.get_logger().info(f"Moving to target pose from RAG: {self.pose}")
-            # move_joints = [2.268928025, 0.8203047475, -1.8675022975, 0.0, 1.0471975500000001, 0.593411945]
-            # deg[-8, 0, -49 -2, 50, 0] deg -> rad
-            # rad[-0.13962634015954636, 0.0, -0.8552113334772214, -0.03490658503988659, 0.8726646259971648, 0.0]
-            move_joints = [-0.13962634015954636, 0.0, -0.8552113334772214, -0.03490658503988659, 0.8726646259971648, 0.0]
             # TODO: IK計算して関節角度に変換する処理を実装する
             # move_joints = self.convert_pose_to_joints(self.pose)
         else:
-            # move_joints = [2.268928025, 0.8203047475, -1.8675022975, 0.0, 1.0471975500000001, 0.593411945]
-            move_joints = [-0.13962634015954636, 0.0, -0.8552113334772214, -0.03490658503988659, 0.8726646259971648, 0.0]
+            self.pr_node.get_logger().error("No valid joints or pose provided. Please define them in semantic_kb.")
+            return "except"
 
         self.xarm.set_joint_value_target(move_joints)
         self.pr_node.get_logger().info("Moved to obj_joints for debug.")

@@ -26,7 +26,12 @@ class Grasp(XArmUtilsWrapper, State):
         # Grasp は (workpiece の場所, workpiece_id) の組み合わせで管理
         self.target_id = kwargs.get("workpiece") or kwargs.get("target_location") or ""
         self.skill_name = kwargs.get("skill_name", "SkillGraspObj")
+        
+        ws_root = self._get_workspace_root()
         registry_path = self.pr_node.get_parameter("pathseed_registry_path").value
+        if not registry_path.startswith('/'):
+            registry_path = os.path.join(ws_root, registry_path)
+            
         self.registry = PathRegistry(registry_path)
 
         # variables
@@ -39,6 +44,19 @@ class Grasp(XArmUtilsWrapper, State):
         self.max_velocity_scale_default = 0.3
         self.max_accel_scale_default = 0.3
         self.planning_time_default = 2.0
+
+    def _get_workspace_root(self) -> str:
+        import os
+        try:
+            from ament_index_python.packages import get_package_prefix
+            install_prefix = get_package_prefix('path_reuse_sm2')
+            return os.path.dirname(os.path.dirname(install_prefix))
+        except Exception:
+            ament_prefix = os.environ.get('AMENT_PREFIX_PATH', '')
+            if ament_prefix:
+                first_path = ament_prefix.split(':')[0]
+                return os.path.dirname(os.path.dirname(first_path))
+            return os.getcwd()
 
     # ====== ROS1: set_stomp_params ======
     # 目的: 与えられたphase(dict)をMoveItへ適用（ROS2ではrosparamでなくAPI直適用）
@@ -134,8 +152,20 @@ class Grasp(XArmUtilsWrapper, State):
         self.pr_node.get_logger().info(f"Grasp state executed.")
         self.pr_node.get_logger().info("------------------------------------------------")
         self._current_blackboard = blackboard
-        # Blackboardに入れとく
-        setattr(blackboard, "obj_joints", self.obj_joints)
+        # 認識結果（FindObjなど）があればそれを優先、なければ RAG/KB からの値を使う
+        detected_obj_joints = getattr(blackboard, "obj_joints", None)
+        if hasattr(blackboard, "get") and not detected_obj_joints:
+            detected_obj_joints = blackboard.get("obj_joints")
+            
+        if detected_obj_joints and len(detected_obj_joints) > 0:
+            self.obj_joints = detected_obj_joints
+            self.pr_node.get_logger().info(f"Using dynamically detected obj_joints: {self.obj_joints}")
+        else:
+            setattr(blackboard, "obj_joints", self.obj_joints)
+            if hasattr(blackboard, "__setitem__"):
+                blackboard["obj_joints"] = self.obj_joints
+            self.pr_node.get_logger().info(f"Using KB/RAG provided obj_joints: {self.obj_joints}")
+            
         self.phase = self.pr_node.get_parameter("grasp_phase").value
         self.pr_node.get_logger().info(f"Current phase: {self.phase}")
         # env = blackboard.get("env", {})
@@ -178,6 +208,11 @@ class Grasp(XArmUtilsWrapper, State):
             else:
                 self.pr_node.get_logger().error(f"Unknown phase: {self.phase}")
                 return "except"
+                
+            # 絶対パスに変換
+            if not pathseed_file.startswith('/'):
+                pathseed_file = os.path.join(self._get_workspace_root(), pathseed_file)
+                
             self.pr_node.get_logger().info(f"[Grasp] Using pathseed file: {pathseed_file}")
             success_generated = self.generate_stomp_path_from_pathseed(
                 file_path=pathseed_file,

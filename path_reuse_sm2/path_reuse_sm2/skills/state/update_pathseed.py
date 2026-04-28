@@ -6,6 +6,7 @@ from yasmin.state import State
 from rclpy.parameter import Parameter
 from path_reuse_method.path_seed_client import PathSeedClient
 from path_reuse_sm2.core.path_registry import PathRegistry
+import os
 
 
 class UpdatePathSeed(State):
@@ -29,9 +30,25 @@ class UpdatePathSeed(State):
 
         # Path Registry (rag_factory_specific_task_agent の data ディレクトリを指す)
         registry_path = self.pr_node.get_parameter("pathseed_registry_path").value
+        if not registry_path.startswith('/'):
+            registry_path = os.path.join(self._get_workspace_root(), registry_path)
+            
         self.pr_node.get_logger().info(f"[UpdatePathSeed] Action: {self.action_name}, Source: {self.source_id}, Target: {self.target_id}")
         self.pr_node.get_logger().info(f"[UpdatePathSeed] Registry path: {registry_path}")
         self.registry = PathRegistry(registry_path)
+
+    def _get_workspace_root(self) -> str:
+        import os
+        try:
+            from ament_index_python.packages import get_package_prefix
+            install_prefix = get_package_prefix('path_reuse_sm2')
+            return os.path.dirname(os.path.dirname(install_prefix))
+        except Exception:
+            ament_prefix = os.environ.get('AMENT_PREFIX_PATH', '')
+            if ament_prefix:
+                first_path = ament_prefix.split(':')[0]
+                return os.path.dirname(os.path.dirname(first_path))
+            return os.getcwd()
 
     def execute(self, blackboard=None):
         self.pr_node.get_logger().info(
