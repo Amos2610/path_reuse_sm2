@@ -26,14 +26,22 @@ class SkillFindObj(State):
 
     def set_blackboard(self, blackboard: Dict[str, Any]) -> bool:
         # default values for find object skill
+        workpiece = self.kwargs.get("workpiece") or self.kwargs.get("target") or ""
+        target = self.kwargs.get("target") or workpiece
+
         blackboard["obj_joints"] = self.kwargs.get("obj_joints", [])
-        return True    
+        blackboard["workpiece"] = workpiece
+        blackboard["target"] = target
+        blackboard["object_class"] = self.kwargs.get("object_class", "")
+        blackboard["query"] = self.kwargs.get("query", "")
+
+        return True
 
     def execute(self, blackboard: Dict[str, Any]) -> str:
         self.node.get_logger().info("Executing SkillFindObj..")
         if not self.set_blackboard(blackboard):
             return ABORT
-        outcome = self._sm.execute(blackboard)
+        outcome = self._sm(blackboard)
         if outcome == "success":
             return SUCCEED
         else:

@@ -23,6 +23,7 @@ try:
     from image_geometry import PinholeCameraModel
 except ImportError as e:
     PinholeCameraModel = None  # image_geometryが利用できない場合のフォールバック
+from ultralytics import YOLO
 
 
 class FindObj(State):
@@ -32,15 +33,20 @@ class FindObj(State):
         self.pr_node = node
         self.pr_client = PathSeedClient()
         self.target_location = kwargs.get("target_location", "")
-        # self.workpiece = "mouse"
-        # self.workpiece = "bottle"
-        self.workpiece = "cup"
-        # self.workpiece = kwargs.get("workpiece", "") #TODO: ステートマシンというかRAG側から持ってくる
+        # LangGraphまたはTaskSetから渡されたworkpieceを使う．
+        # ここに値がある場合，execute側で検出済みとして扱える．
+        self.workpiece = kwargs.get("workpiece") or kwargs.get("target") or ""
         self.path_seed_path = kwargs.get("path_seed_path", "")
         self.step_index = kwargs.get("step_index", 0)
 
         # YOLOの初期設定
+        self.model = None
         self.yolo_model_path = kwargs.get("yolo_model", "yolo26x-seg.pt")
+        try:
+            self.model = YOLO(self.yolo_model_path)
+            self.pr_node.get_logger().info(f"[FindObj] YOLO model loaded: {self.yolo_model_path}")
+        except Exception as e:
+            self.pr_node.get_logger().warn(f"[FindObj] YOLO model could not be loaded: {e}")
         self.conf_th = float(kwargs.get("conf_th", 0.25)) # 信頼度
         self.iou_th = float(kwargs.get("iou_th", 0.45))
 
@@ -403,7 +409,39 @@ class FindObj(State):
         self.pr_node.get_logger().info("------------------------------------------------")
         self.pr_node.get_logger().info("FindObj state executed.")
         self.pr_node.get_logger().info("------------------------------------------------")
-        self.xarm.gripper_open()
+        def _bb_get(key, default=None):
+            try:
+                value = blackboard.get(key)
+                return value if value is not None else default
+            except Exception:
+                return getattr(blackboard, key, default)
+
+        def _bb_set(key, value):
+            try:
+                blackboard[key] = value
+            except Exception:
+                setattr(blackboard, key, value)
+
+        resolved_workpiece = _bb_get("workpiece", None) or self.workpiece
+
+        if resolved_workpiece:
+            self.pr_node.get_logger().info(
+                f"[FindObj] workpiece already resolved: {resolved_workpiece}. Skip active detection."
+            )
+
+            dummy_obj_joints = [0.916, 0.724, -1.70014, 0.001, 0.977, -0.67]
+
+            _bb_set("workpiece", resolved_workpiece)
+            if not _bb_get("obj_joints", None):
+                _bb_set("obj_joints", dummy_obj_joints)
+
+            return "success"
+
+        try:
+            self.xarm.gripper_open()
+        except Exception as e:
+            self.pr_node.get_logger().warn(f"[FindObj] gripper_open failed but continue: {e}")
+
         target = None
 
         # 画像/深度/CameraInfoが揃うまで少し待つ

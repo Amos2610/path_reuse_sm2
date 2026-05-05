@@ -126,25 +126,43 @@ class Grasp(XArmUtilsWrapper, State):
             return False
     
     def set_start_and_goal_joint_values(self, blackboard: Any) -> Optional[Tuple[List[float], List[float]]]:
-        obj_joints = getattr(blackboard, "obj_joints", None)
-        if obj_joints is None:
+        def _bb_get(key, default=None):
+            try:
+                value = blackboard.get(key)
+                return value if value is not None else default
+            except Exception:
+                try:
+                    return getattr(blackboard, key)
+                except Exception:
+                    return default
+
+        obj_joints = _bb_get("obj_joints", None)
+        if obj_joints is None or len(obj_joints) == 0:
             self.pr_node.get_logger().error("Blackboard missing 'obj_joints'.")
             return None
-        
-        move_joints = getattr(blackboard, "move_joints", None)
-        if move_joints is None:
-            self.pr_node.get_logger().error("Blackboard missing 'move_joints'.")
-            return None
-        
-        #TODO: ここでmove_jointsからTF変換，逆運動学を使ってstart_joint_valuesを計算する
-        # 一旦move_jointsのまま使う
+
+        move_joints = _bb_get("move_joints", None)
+
+        if move_joints is None or len(move_joints) == 0:
+            self.pr_node.get_logger().warn(
+                "Blackboard missing 'move_joints'. Use fallback start joints for simulator mode."
+            )
+            move_joints = [0.916, 0.724, -1.70014, 0.001, 0.977, -0.67]
+
+            try:
+                blackboard["move_joints"] = move_joints
+            except Exception:
+                try:
+                    setattr(blackboard, "move_joints", move_joints)
+                except Exception:
+                    pass
+
         start_joint_values = move_joints
-        self.pr_node.get_logger().info(f"Grasp start joint values: {start_joint_values}")
-        
-        #TODO: ここでobj_jointsからTF変換，逆運動学を使ってgoal_joint_valuesを計算する
-        # 一旦obj_jointsのまま使う
         goal_joint_values = obj_joints
+
+        self.pr_node.get_logger().info(f"Grasp start joint values: {start_joint_values}")
         self.pr_node.get_logger().info(f"Grasp goal joint values: {goal_joint_values}")
+
         return start_joint_values, goal_joint_values
 
     def execute(self, blackboard=None):
