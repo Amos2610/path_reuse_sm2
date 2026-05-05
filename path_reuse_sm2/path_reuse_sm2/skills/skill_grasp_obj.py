@@ -57,7 +57,7 @@ class SkillGraspObj(State):
         self.node.get_logger().info("Executing SkillGraspObj...")
         if not self.get_blackboard(blackboard):
             return ABORT
-        outcome = self._sm.execute(blackboard)
+        outcome = self._sm(blackboard)
         if outcome == "success":
             return SUCCEED
         else:

@@ -25,7 +25,7 @@ class SkillMove(State):
 
     def execute(self, blackboard):
         self.node.get_logger().info("Executing SkillMove...")
-        outcome = self._sm.execute(blackboard)
+        outcome = self._sm(blackboard)
         if outcome == "success":
             return SUCCEED
         else:
