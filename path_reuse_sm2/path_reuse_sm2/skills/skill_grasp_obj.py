@@ -41,17 +41,30 @@ class SkillGraspObj(State):
         )
 
     def get_blackboard(self, bb) -> bool:
-        if not hasattr(bb, "obj_joints") or bb.obj_joints is None:
-            # RAG から直接 joints が送られているか確認
+        obj_joints = None
+
+        try:
+            obj_joints = bb.get("obj_joints")
+        except Exception:
+            try:
+                obj_joints = getattr(bb, "obj_joints")
+            except Exception:
+                obj_joints = None
+
+        if obj_joints is None:
             joints_from_rag = self.kwargs.get("joints")
             if joints_from_rag and len(joints_from_rag) > 0:
                 self.node.get_logger().info(f"[SkillGraspObj] 'obj_joints' missing on BB. Using joints from RAG: {joints_from_rag}")
-                setattr(bb, "obj_joints", joints_from_rag)
+                try:
+                    bb["obj_joints"] = joints_from_rag
+                except Exception:
+                    setattr(bb, "obj_joints", joints_from_rag)
                 return True
-            
+
             self.node.get_logger().error("Blackboard missing 'obj_joints' and no fallback joints in RAG args.")
             return False
-        return True        
+
+        return True
 
     def execute(self, blackboard: Dict[str, Any]) -> str:
         self.node.get_logger().info("Executing SkillGraspObj...")
