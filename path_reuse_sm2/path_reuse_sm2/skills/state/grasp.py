@@ -6,7 +6,7 @@ from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 from yasmin.state import State
 from path_reuse_method.path_seed_client import PathSeedClient
-from path_reuse_sm2.core.xarm_utils import XArmUtilsWrapper
+from path_reuse_sm2.core.xarm_utils import XArmUtilsWrapper, XArmRobotUtils
 from path_reuse_sm2.core.path_registry import PathRegistry
 
 
@@ -20,6 +20,15 @@ class Grasp(XArmUtilsWrapper, State):
         self.workpiece = kwargs.get("workpiece", "")
         self.path_seed_path = kwargs.get("path_seed_path", "")
         self.obj_joints = kwargs.get("joints", [])
+        self.grasp_pose = kwargs.get("grasp_pose") or kwargs.get("pose")
+        self.robot_utils = XArmRobotUtils(
+            self.pr_node,
+            base_frame=kwargs.get("base_frame", "link_base"),
+            ee_link=kwargs.get("ee_link", "link_eef"),
+            move_group=kwargs.get("move_group", "xarm6"),
+            ik_service=kwargs.get("ik_service", "/compute_ik"),
+            xarm=self.xarm,
+        )
 
         # Path Registry
         self.source_id = kwargs.get("source_location", "HOME")
@@ -98,6 +107,33 @@ class Grasp(XArmUtilsWrapper, State):
                     self.xarm.set_move_group_parameter(k_dst, str(v))
         return phase
     
+    def _resolve_pathseed_file(self, pathseed_file: str) -> str:
+        """
+        pathseedの相対パスをPathSeedLibrary基準で絶対パス化する．
+        """
+        if not pathseed_file:
+            return ""
+
+        legacy_map = {
+            "ex1_pick_and_place/pre_defined/pathseed_pick.txt": "ex1_pick_and_place/pre_defined/pick/pathseed_pick_0529_STOMP01.txt",
+            "ex1_pick_and_place/pre_defined/pathseed_place.txt": "ex1_pick_and_place/pre_defined/place/pathseed_place_0627_RRT-connect01.txt",
+        }
+        pathseed_file = legacy_map.get(pathseed_file, pathseed_file)
+
+        if pathseed_file.startswith("/"):
+            return pathseed_file
+
+        ws_root = self._get_workspace_root()
+
+        if pathseed_file.startswith("src/"):
+            return os.path.join(ws_root, pathseed_file)
+
+        library_base = os.path.join(
+            ws_root,
+            "src/path_reuse_method/pathseeds/Library",
+        )
+        return os.path.join(library_base, pathseed_file)
+
     def generate_stomp_path_from_pathseed(
         self,
         file_path: str,
@@ -136,18 +172,39 @@ class Grasp(XArmUtilsWrapper, State):
                 except Exception:
                     return default
 
-        obj_joints = _bb_get("obj_joints", None)
-        if obj_joints is None or len(obj_joints) == 0:
-            self.pr_node.get_logger().error("Blackboard missing 'obj_joints'.")
+        raw_obj_joints = _bb_get("obj_joints", None)
+        obj_joints = self.robot_utils.resolve_joints(
+            raw_obj_joints,
+            self.obj_joints,
+            self.grasp_pose,
+        )
+
+        if not obj_joints:
+            self.pr_node.get_logger().error("Blackboard missing valid 'obj_joints' and IK fallback failed.")
             return None
+
+        try:
+            blackboard["obj_joints"] = obj_joints
+        except Exception:
+            try:
+                setattr(blackboard, "obj_joints", obj_joints)
+            except Exception:
+                pass
 
         move_joints = _bb_get("move_joints", None)
 
-        if move_joints is None or len(move_joints) == 0:
-            self.pr_node.get_logger().warn(
-                "Blackboard missing 'move_joints'. Use fallback start joints for simulator mode."
-            )
-            move_joints = [0.916, 0.724, -1.70014, 0.001, 0.977, -0.67]
+        if not self.robot_utils.is_joint_list(move_joints):
+            current_joints = self.robot_utils.get_current_joint_values()
+            if current_joints:
+                self.pr_node.get_logger().info(
+                    "Blackboard missing 'move_joints'. Use current joint values."
+                )
+                move_joints = current_joints
+            else:
+                self.pr_node.get_logger().warn(
+                    "Blackboard missing 'move_joints' and current joints are unavailable. Use fallback start joints for simulator mode."
+                )
+                move_joints = [0.916, 0.724, -1.70014, 0.001, 0.977, -0.67]
 
             try:
                 blackboard["move_joints"] = move_joints
@@ -171,25 +228,42 @@ class Grasp(XArmUtilsWrapper, State):
         self.pr_node.get_logger().info("------------------------------------------------")
         self._current_blackboard = blackboard
         # 認識結果（FindObjなど）があればそれを優先、なければ RAG/KB からの値を使う
-        detected_obj_joints = getattr(blackboard, "obj_joints", None)
-        if hasattr(blackboard, "get") and not detected_obj_joints:
+        try:
             detected_obj_joints = blackboard.get("obj_joints")
-            
-        if detected_obj_joints and len(detected_obj_joints) > 0:
-            self.obj_joints = detected_obj_joints
+        except Exception:
+            try:
+                detected_obj_joints = getattr(blackboard, "obj_joints")
+            except Exception:
+                detected_obj_joints = None
+
+        if self.robot_utils.is_joint_list(detected_obj_joints):
+            self.obj_joints = self.robot_utils.normalize_joint_list(detected_obj_joints)
             self.pr_node.get_logger().info(f"Using dynamically detected obj_joints: {self.obj_joints}")
-        else:
-            setattr(blackboard, "obj_joints", self.obj_joints)
-            if hasattr(blackboard, "__setitem__"):
+        elif detected_obj_joints is not None:
+            self.pr_node.get_logger().info("Detected obj_joints is pose-like. Defer IK to joint resolution.")
+        elif self.robot_utils.is_joint_list(self.obj_joints):
+            self.obj_joints = self.robot_utils.normalize_joint_list(self.obj_joints)
+            try:
                 blackboard["obj_joints"] = self.obj_joints
+            except Exception:
+                setattr(blackboard, "obj_joints", self.obj_joints)
             self.pr_node.get_logger().info(f"Using KB/RAG provided obj_joints: {self.obj_joints}")
+        elif self.grasp_pose is not None:
+            self.pr_node.get_logger().info("Using grasp_pose for IK fallback.")
+        else:
+            self.pr_node.get_logger().warn("No obj_joints or grasp_pose before joint resolution.")
             
         self.phase = self.pr_node.get_parameter("grasp_phase").value
         self.pr_node.get_logger().info(f"Current phase: {self.phase}")
         # env = blackboard.get("env", {})
         # pipeline = blackboard.get("pipeline", "stomp")
 
-        start_joint_values, goal_joint_values = self.set_start_and_goal_joint_values(blackboard)
+        joint_values = self.set_start_and_goal_joint_values(blackboard)
+        if joint_values is None:
+            self.pr_node.get_logger().error("Failed to set start/goal joint values.")
+            return "except"
+
+        start_joint_values, goal_joint_values = joint_values
         if not goal_joint_values:
             self.pr_node.get_logger().error("Failed to set joint value target.")
             return "except"
@@ -228,9 +302,8 @@ class Grasp(XArmUtilsWrapper, State):
                 return "except"
                 
             # 絶対パスに変換
-            if not pathseed_file.startswith('/'):
-                pathseed_file = os.path.join(self._get_workspace_root(), pathseed_file)
-                
+            pathseed_file = self._resolve_pathseed_file(pathseed_file)
+
             self.pr_node.get_logger().info(f"[Grasp] Using pathseed file: {pathseed_file}")
             success_generated = self.generate_stomp_path_from_pathseed(
                 file_path=pathseed_file,

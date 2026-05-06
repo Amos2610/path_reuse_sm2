@@ -9,6 +9,9 @@ from path_reuse_sm2.core.plugin import skill
 
 from path_reuse_sm2.skills.state.grasp import Grasp
 from path_reuse_sm2.skills.state.update_pathseed import UpdatePathSeed
+from rclpy.duration import Duration
+from geometry_msgs.msg import PoseStamped
+from moveit_msgs.srv import GetPositionIK
 
 
 @skill("SkillGraspObj")
@@ -40,31 +43,55 @@ class SkillGraspObj(State):
             fsm=self._sm
         )
 
-    def get_blackboard(self, bb) -> bool:
-        obj_joints = None
-
+    def _bb_get(self, bb, key, default=None):
         try:
-            obj_joints = bb.get("obj_joints")
+            return bb.get(key, default)
         except Exception:
             try:
-                obj_joints = getattr(bb, "obj_joints")
+                return getattr(bb, key)
             except Exception:
-                obj_joints = None
+                return default
 
-        if obj_joints is None:
-            joints_from_rag = self.kwargs.get("joints")
-            if joints_from_rag and len(joints_from_rag) > 0:
-                self.node.get_logger().info(f"[SkillGraspObj] 'obj_joints' missing on BB. Using joints from RAG: {joints_from_rag}")
-                try:
-                    bb["obj_joints"] = joints_from_rag
-                except Exception:
-                    setattr(bb, "obj_joints", joints_from_rag)
-                return True
+    def _bb_set(self, bb, key, value):
+        try:
+            bb[key] = value
+        except Exception:
+            setattr(bb, key, value)
 
-            self.node.get_logger().error("Blackboard missing 'obj_joints' and no fallback joints in RAG args.")
+    def _is_joint_list(self, value):
+        if not isinstance(value, (list, tuple)):
+            return False
+        if len(value) < 6:
+            return False
+        try:
+            [float(v) for v in value[:6]]
+            return True
+        except Exception:
             return False
 
-        return True
+    def get_blackboard(self, bb) -> bool:
+        obj_joints = self._bb_get(bb, "obj_joints")
+
+        if self._is_joint_list(obj_joints):
+            return True
+
+        joints_from_rag = self.kwargs.get("joints")
+        if self._is_joint_list(joints_from_rag):
+            joints = [float(v) for v in joints_from_rag[:6]]
+            self.node.get_logger().info(f"[SkillGraspObj] Using joints from RAG args: {joints}")
+            self._bb_set(bb, "obj_joints", joints)
+            return True
+
+        if obj_joints is not None:
+            self.node.get_logger().info("[SkillGraspObj] obj_joints is pose-like. Grasp state will resolve it.")
+            return True
+
+        if self.kwargs.get("pose") is not None or self.kwargs.get("grasp_pose") is not None:
+            self.node.get_logger().info("[SkillGraspObj] grasp pose exists. Grasp state will compute IK.")
+            return True
+
+        self.node.get_logger().error("Blackboard missing 'obj_joints' and no grasp pose fallback.")
+        return False
 
     def execute(self, blackboard: Dict[str, Any]) -> str:
         self.node.get_logger().info("Executing SkillGraspObj...")

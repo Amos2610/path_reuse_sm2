@@ -429,12 +429,7 @@ class FindObj(State):
                 f"[FindObj] workpiece already resolved: {resolved_workpiece}. Skip active detection."
             )
 
-            dummy_obj_joints = [0.916, 0.724, -1.70014, 0.001, 0.977, -0.67]
-
             _bb_set("workpiece", resolved_workpiece)
-            if not _bb_get("obj_joints", None):
-                _bb_set("obj_joints", dummy_obj_joints)
-
             return "success"
 
         try:
