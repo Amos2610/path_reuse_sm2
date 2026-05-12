@@ -28,6 +28,7 @@ class Grasp(XArmUtilsWrapper, State):
             move_group=kwargs.get("move_group", "xarm6"),
             ik_service=kwargs.get("ik_service", "/compute_ik"),
             xarm=self.xarm,
+            default_pose_frame=kwargs.get("grasp_pose_frame_id", "camera_color_optical_frame"),
         )
 
         # Path Registry
@@ -201,6 +202,8 @@ class Grasp(XArmUtilsWrapper, State):
                 )
                 move_joints = current_joints
             else:
+                # TODO(fake): when current joints are unavailable in fake mode,
+                # use a defined safe start posture. For real robot, this branch should rarely be used.
                 self.pr_node.get_logger().warn(
                     "Blackboard missing 'move_joints' and current joints are unavailable. Use fallback start joints for simulator mode."
                 )
@@ -322,6 +325,9 @@ class Grasp(XArmUtilsWrapper, State):
         self.xarm.set_joint_value_target(goal_joint_values)
         success, plan, _, _ = self.xarm.plan()
         if success:
+            # TODO(fake-exec): in fake mode, MoveIt execution can abort even after planning succeeds
+            # because current robot state is unavailable. Decide whether to skip execution,
+            # return success after planning, or plan to a fixed safe posture.
             self.pr_node.get_logger().info("Plan found, executing...")
             exec_success = self.xarm.execute()
             if not exec_success:

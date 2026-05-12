@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import rclpy
-from builtin_interfaces.msg import Duration
+from builtin_interfaces.msg import Duration as DurationMsg
+from rclpy.duration import Duration as RclpyDuration
+import tf2_ros
+import tf2_geometry_msgs
 from moveit_msgs.srv import GetPositionIK
 from geometry_msgs.msg import PoseStamped
 from typing import Any
@@ -44,6 +47,7 @@ class XArmRobotUtils:
         move_group="xarm6",
         ik_service="/compute_ik",
         xarm=None,
+        default_pose_frame=None,
     ):
         self.node = node
         self.base_frame = base_frame
@@ -51,7 +55,10 @@ class XArmRobotUtils:
         self.move_group = move_group
         self.ik_service = ik_service
         self.xarm = xarm
+        self.default_pose_frame = default_pose_frame or base_frame
         self._ik_cli = None
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self.node)
 
     def _is_sequence(self, value):
         if isinstance(value, (str, bytes, dict)):
@@ -77,6 +84,8 @@ class XArmRobotUtils:
         return [float(v) for v in list(value)[:6]]
 
     def pose_to_pose_stamped(self, pose):
+        # TODO(real-robot): transform non-base-frame pose to base_frame using TF before IK.
+        # Current implementation assumes pose is already expressed in base_frame.
         if pose is None:
             return None
 
@@ -84,7 +93,7 @@ class XArmRobotUtils:
             return pose
 
         ps = PoseStamped()
-        ps.header.frame_id = self.base_frame
+        ps.header.frame_id = self.default_pose_frame
         ps.header.stamp = self.node.get_clock().now().to_msg()
 
         if self._is_sequence(pose) and len(pose) == 7:
@@ -105,7 +114,7 @@ class XArmRobotUtils:
             position = pose.get("position") or {}
             orientation = pose.get("orientation") or {}
 
-            ps.header.frame_id = pose.get("frame_id") or self.base_frame
+            ps.header.frame_id = pose.get("frame_id") or self.default_pose_frame
             ps.pose.position.x = float(position.get("x", 0.0))
             ps.pose.position.y = float(position.get("y", 0.0))
             ps.pose.position.z = float(position.get("z", 0.0))
@@ -121,8 +130,35 @@ class XArmRobotUtils:
 
         return None
 
+    def _transform_pose_to_base(self, pose_stamped):
+        if pose_stamped is None:
+            return None
+
+        src_frame = pose_stamped.header.frame_id or self.default_pose_frame
+        pose_stamped.header.frame_id = src_frame
+
+        if src_frame == self.base_frame:
+            return pose_stamped
+
+        try:
+            transformed = self._tf_buffer.transform(
+                pose_stamped,
+                self.base_frame,
+                timeout=RclpyDuration(seconds=0.5),
+            )
+            self.node.get_logger().info(
+                f"[XArmRobotUtils] transformed pose: {src_frame} -> {self.base_frame}"
+            )
+            return transformed
+        except Exception as e:
+            self.node.get_logger().error(
+                f"[XArmRobotUtils] TF transform failed: {src_frame} -> {self.base_frame}: {e}"
+            )
+            return None
+
     def compute_ik(self, pose):
         target = self.pose_to_pose_stamped(pose)
+        target = self._transform_pose_to_base(target)
         if target is None:
             return None
 
@@ -137,7 +173,7 @@ class XArmRobotUtils:
         req.ik_request.group_name = self.move_group
         req.ik_request.ik_link_name = self.ee_link
         req.ik_request.pose_stamped = target
-        req.ik_request.timeout = Duration(sec=1, nanosec=0)
+        req.ik_request.timeout = DurationMsg(sec=1, nanosec=0)
         req.ik_request.avoid_collisions = False
 
         future = self._ik_cli.call_async(req)
@@ -157,6 +193,8 @@ class XArmRobotUtils:
         return joints
 
     def get_current_joint_values(self):
+        # TODO(real-robot): replace fallback behavior with actual current joint acquisition.
+        # In fake MoveIt, current_state can be empty or timestamp 0, so returning None is expected.
         candidates = []
 
         if self.xarm is not None:
