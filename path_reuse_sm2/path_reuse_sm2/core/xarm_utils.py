@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import rclpy
+from rclpy.time import Time as RclpyTime
 from builtin_interfaces.msg import Duration as DurationMsg
 from rclpy.duration import Duration as RclpyDuration
 import tf2_ros
 import tf2_geometry_msgs
 from moveit_msgs.srv import GetPositionIK
+from moveit_msgs.msg import RobotState
+from sensor_msgs.msg import JointState
 from geometry_msgs.msg import PoseStamped
-from typing import Any
+from typing import Any, List, Optional
 from xarm_utils_py import XArmUtils, Node
 
 
@@ -94,7 +97,7 @@ class XArmRobotUtils:
 
         ps = PoseStamped()
         ps.header.frame_id = self.default_pose_frame
-        ps.header.stamp = self.node.get_clock().now().to_msg()
+        ps.header.stamp = RclpyTime().to_msg()  # time=0: use latest available TF
 
         if self._is_sequence(pose) and len(pose) == 7:
             pose = list(pose)
@@ -140,14 +143,24 @@ class XArmRobotUtils:
         if src_frame == self.base_frame:
             return pose_stamped
 
+        p = pose_stamped.pose.position
+        q = pose_stamped.pose.orientation
+        self.node.get_logger().info(
+            f"[XArmRobotUtils] raw pose [{src_frame}]: "
+            f"pos=({p.x:.4f}, {p.y:.4f}, {p.z:.4f})  "
+            f"quat=({q.x:.4f}, {q.y:.4f}, {q.z:.4f}, {q.w:.4f})"
+        )
+
         try:
             transformed = self._tf_buffer.transform(
                 pose_stamped,
                 self.base_frame,
                 timeout=RclpyDuration(seconds=0.5),
             )
+            tp = transformed.pose.position
             self.node.get_logger().info(
-                f"[XArmRobotUtils] transformed pose: {src_frame} -> {self.base_frame}"
+                f"[XArmRobotUtils] transformed pose [{src_frame} -> {self.base_frame}]: "
+                f"pos=({tp.x:.4f}, {tp.y:.4f}, {tp.z:.4f})"
             )
             return transformed
         except Exception as e:
@@ -156,7 +169,7 @@ class XArmRobotUtils:
             )
             return None
 
-    def compute_ik(self, pose):
+    def compute_ik(self, pose, seed_joints: Optional[List[float]] = None):
         target = self.pose_to_pose_stamped(pose)
         target = self._transform_pose_to_base(target)
         if target is None:
@@ -175,6 +188,15 @@ class XArmRobotUtils:
         req.ik_request.pose_stamped = target
         req.ik_request.timeout = DurationMsg(sec=1, nanosec=0)
         req.ik_request.avoid_collisions = False
+
+        # seed_joints をセットすると姿勢の初期ジョイントがセットできる
+        if seed_joints is not None and len(seed_joints) >= 6:
+            js = JointState()
+            js.name = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
+            js.position = [float(v) for v in seed_joints[:6]]
+            rs = RobotState()
+            rs.joint_state = js
+            req.ik_request.robot_state = rs
 
         future = self._ik_cli.call_async(req)
         rclpy.spin_until_future_complete(self.node, future, timeout_sec=2.0)
@@ -239,6 +261,13 @@ class XArmRobotUtils:
             "[XArmRobotUtils] current joint values are unavailable or empty."
         )
         return None
+
+    def transform_to_base(self, pose):
+        """Transform a pose to the base frame, returning a PoseStamped. Returns None on failure."""
+        ps = self.pose_to_pose_stamped(pose)
+        if ps is None:
+            return None
+        return self._transform_pose_to_base(ps)
 
     def resolve_joints(self, *candidates):
         for value in candidates:

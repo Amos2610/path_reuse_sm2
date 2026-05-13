@@ -5,6 +5,9 @@ import time
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 from yasmin.state import State
+from geometry_msgs.msg import TransformStamped
+from tf2_ros import TransformBroadcaster
+from visualization_msgs.msg import Marker, MarkerArray
 from path_reuse_method.path_seed_client import PathSeedClient
 from path_reuse_sm2.core.xarm_utils import XArmUtilsWrapper, XArmRobotUtils
 from path_reuse_sm2.core.path_registry import PathRegistry
@@ -24,7 +27,7 @@ class Grasp(XArmUtilsWrapper, State):
         self.robot_utils = XArmRobotUtils(
             self.pr_node,
             base_frame=kwargs.get("base_frame", "link_base"),
-            ee_link=kwargs.get("ee_link", "link_eef"),
+            ee_link=kwargs.get("ee_link", "link_tcp"),
             move_group=kwargs.get("move_group", "xarm6"),
             ik_service=kwargs.get("ik_service", "/compute_ik"),
             xarm=self.xarm,
@@ -43,6 +46,14 @@ class Grasp(XArmUtilsWrapper, State):
             registry_path = os.path.join(ws_root, registry_path)
             
         self.registry = PathRegistry(registry_path)
+
+        self.pre_grasp_offset = kwargs.get("pre_grasp_offset", 0.1)  # meters
+        # link_base座標系での固定orientation [x,y,z,w]。
+        # デフォルト: [1,0,0,0] = X軸まわり180° = このロボットの下向き標準姿勢
+        _down = [1.0, 0.0, 0.0, 0.0]
+        self.pre_grasp_orientation = kwargs.get("pre_grasp_orientation", _down)
+        self.grasp_orientation = kwargs.get("grasp_orientation", _down)
+        self._tf_broadcaster = TransformBroadcaster(self.pr_node)
 
         # variables
         self.try_count: int = 0
@@ -67,6 +78,40 @@ class Grasp(XArmUtilsWrapper, State):
                 first_path = ament_prefix.split(':')[0]
                 return os.path.dirname(os.path.dirname(first_path))
             return os.getcwd()
+
+    def _offset_pose_along_approach(self, pose_stamped, offset_m: float):
+        """link_base座標系のZ軸上方にoffset_mだけ離れたpre_graspを計算する（上方向把持用）。
+        self.pre_grasp_orientation が設定されている場合はそのorientationで上書きする。
+        """
+        pre_grasp = deepcopy(pose_stamped)
+        pre_grasp.pose.position.z += offset_m
+        if self.pre_grasp_orientation is not None:
+            q = self.pre_grasp_orientation
+            pre_grasp.pose.orientation.x = float(q[0])
+            pre_grasp.pose.orientation.y = float(q[1])
+            pre_grasp.pose.orientation.z = float(q[2])
+            pre_grasp.pose.orientation.w = float(q[3])
+        return pre_grasp
+
+    def _publish_grasp_tfs(self, grasp_ps, pre_grasp_ps=None):
+        """grasp, pre_graspをTFフレームとして配信する（RViz可視化用）。"""
+        now = self.pr_node.get_clock().now().to_msg()
+        frames = [("grasp_target", grasp_ps)]
+        if pre_grasp_ps is not None:
+            frames.append(("pre_grasp_target", pre_grasp_ps))
+        for child_frame_id, ps in frames:
+            t = TransformStamped()
+            t.header.stamp = now
+            t.header.frame_id = self.robot_utils.base_frame  # 常に link_base 基準
+            t.child_frame_id = child_frame_id
+            t.transform.translation.x = ps.pose.position.x
+            t.transform.translation.y = ps.pose.position.y
+            t.transform.translation.z = ps.pose.position.z
+            t.transform.rotation = ps.pose.orientation
+            self._tf_broadcaster.sendTransform(t)
+        self.pr_node.get_logger().info(
+            f"[Grasp] Published TF: {[f for f, _ in frames]} in {self.robot_utils.base_frame}"
+        )
 
     # ====== ROS1: set_stomp_params ======
     # 目的: 与えられたphase(dict)をMoveItへ適用（ROS2ではrosparamでなくAPI直適用）
@@ -230,6 +275,17 @@ class Grasp(XArmUtilsWrapper, State):
         self.pr_node.get_logger().info(f"Grasp state executed.")
         self.pr_node.get_logger().info("------------------------------------------------")
         self._current_blackboard = blackboard
+        # blackboard の grasp_pose を優先して self.grasp_pose に反映する
+        try:
+            bb_grasp_pose = blackboard.get("grasp_pose")
+        except Exception:
+            bb_grasp_pose = getattr(blackboard, "grasp_pose", None)
+        if bb_grasp_pose is not None:
+            self.grasp_pose = bb_grasp_pose
+            self.pr_node.get_logger().info(
+                f"[Grasp] grasp_pose loaded from blackboard: {self.grasp_pose}"
+            )
+
         # 認識結果（FindObjなど）があればそれを優先、なければ RAG/KB からの値を使う
         try:
             detected_obj_joints = blackboard.get("obj_joints")
@@ -258,8 +314,39 @@ class Grasp(XArmUtilsWrapper, State):
             
         self.phase = self.pr_node.get_parameter("grasp_phase").value
         self.pr_node.get_logger().info(f"Current phase: {self.phase}")
-        # env = blackboard.get("env", {})
-        # pipeline = blackboard.get("pipeline", "stomp")
+
+        # grasp_orientation が設定されており、まだ関節値が未確定の場合:
+        # ベースフレームへ変換後に orientation を上書きしてから IK を計算し、
+        # blackboard に書き込む。これにより set_start_and_goal_joint_values が
+        # そのまま使用する。
+        if (self.grasp_orientation is not None
+                and self.grasp_pose is not None
+                and not self.robot_utils.is_joint_list(self.obj_joints)):
+            grasp_pose_base_tmp = self.robot_utils.transform_to_base(self.grasp_pose)
+            if grasp_pose_base_tmp is not None:
+                q = self.grasp_orientation
+                grasp_pose_base_tmp.pose.orientation.x = float(q[0])
+                grasp_pose_base_tmp.pose.orientation.y = float(q[1])
+                grasp_pose_base_tmp.pose.orientation.z = float(q[2])
+                grasp_pose_base_tmp.pose.orientation.w = float(q[3])
+                forced_joints = self.robot_utils.normalize_joint_list(
+                    self.robot_utils.compute_ik(grasp_pose_base_tmp)
+                )
+                if forced_joints is not None:
+                    self.pr_node.get_logger().info(
+                        f"[Grasp] Applied grasp_orientation override. IK joints: {forced_joints}"
+                    )
+                    # blackboard 経由は Yasmin の内部 dict に反映されない場合があるため
+                    # self.obj_joints に直接セットして resolve_joints に確実に渡す
+                    self.obj_joints = forced_joints
+                    try:
+                        blackboard["obj_joints"] = forced_joints
+                    except Exception:
+                        setattr(blackboard, "obj_joints", forced_joints)
+                else:
+                    self.pr_node.get_logger().warn(
+                        "[Grasp] grasp_orientation IK failed, falling back to original grasp_pose."
+                    )
 
         joint_values = self.set_start_and_goal_joint_values(blackboard)
         if joint_values is None:
@@ -271,6 +358,59 @@ class Grasp(XArmUtilsWrapper, State):
             self.pr_node.get_logger().error("Failed to set joint value target.")
             return "except"
         
+        # ==============================
+        # Pre-grasp 計算と TF 配信
+        # ==============================
+        grasp_pose_base = None
+        pre_grasp_pose_base = None
+        pre_grasp_joints = None
+
+        if self.grasp_pose is not None:
+            grasp_pose_base = self.robot_utils.transform_to_base(self.grasp_pose)
+            if grasp_pose_base is not None:
+                pre_grasp_pose_base = self._offset_pose_along_approach(
+                    grasp_pose_base, self.pre_grasp_offset
+                )
+                # Step1: graspをシードにpre-graspを計算（同じ関節構成ファミリーに誘導）
+                raw = self.robot_utils.compute_ik(pre_grasp_pose_base, seed_joints=goal_joint_values)
+                pre_grasp_joints = self.robot_utils.normalize_joint_list(raw)
+                if pre_grasp_joints is None:
+                    self.pr_node.get_logger().warn(
+                        "[Grasp] Pre-grasp IK failed, will skip pre-grasp step."
+                    )
+                else:
+                    self.pr_node.get_logger().info(
+                        f"[Grasp] Pre-grasp joints: {pre_grasp_joints}"
+                    )
+                    # Step2: pre-graspをシードにgraspを再計算して同じ関節構成を保証する
+                    # （シードなしIKが別の肘構成を返した場合でも、ここで揃える）
+                    grasp_pose_base_oriented = deepcopy(grasp_pose_base)
+                    if self.grasp_orientation is not None:
+                        q = self.grasp_orientation
+                        grasp_pose_base_oriented.pose.orientation.x = float(q[0])
+                        grasp_pose_base_oriented.pose.orientation.y = float(q[1])
+                        grasp_pose_base_oriented.pose.orientation.z = float(q[2])
+                        grasp_pose_base_oriented.pose.orientation.w = float(q[3])
+                    refined = self.robot_utils.normalize_joint_list(
+                        self.robot_utils.compute_ik(
+                            grasp_pose_base_oriented, seed_joints=pre_grasp_joints
+                        )
+                    )
+                    if refined is not None:
+                        goal_joint_values = refined
+                        self.pr_node.get_logger().info(
+                            f"[Grasp] Refined goal_joint_values (seeded from pre-grasp): {goal_joint_values}"
+                        )
+
+        if grasp_pose_base is not None:
+            self._publish_grasp_tfs(grasp_pose_base, pre_grasp_pose_base)
+
+        # ハンドを開く
+        try:
+            self.xarm.gripper_open()
+        except Exception as e:
+            self.pr_node.get_logger().warn(f"[Grasp] gripper_open failed but continue: {e}")
+
         # use_pathseed = True  # TODO: blackboard等で切り替え可能に
         use_pathseed = self.pr_node.get_parameter("use_pathseed").value
         self.pr_node.get_logger().info(f"use_pathseed: {use_pathseed}")
@@ -281,7 +421,7 @@ class Grasp(XArmUtilsWrapper, State):
             self.pr_node.get_logger().info(f"Grasp phase: {self.phase}")
             # 1. Registry から検索
             reg_path = self.registry.get_path_seed(self.source_id, self.target_id, self.skill_name)
-            
+
             if reg_path:
                 self.pr_node.get_logger().info(f"[Grasp] Found entry in registry: {reg_path}")
                 # "ex1_..." 形式なら prefix を補完
@@ -303,7 +443,7 @@ class Grasp(XArmUtilsWrapper, State):
             else:
                 self.pr_node.get_logger().error(f"Unknown phase: {self.phase}")
                 return "except"
-                
+
             # 絶対パスに変換
             pathseed_file = self._resolve_pathseed_file(pathseed_file)
 
@@ -318,16 +458,33 @@ class Grasp(XArmUtilsWrapper, State):
                 return "except"
         else:
             self.xarm.set_planning_pipeline("ompl")
-        
+
         ##############################
         ### Planning and Execution ###
         ##############################
+
+        # --- Step 1: Pre-grasp (OMPL, use_pathseed=False のみ) ---
+        if not use_pathseed and pre_grasp_joints is not None:
+            self.pr_node.get_logger().info("[Grasp] Planning to pre-grasp position...")
+            self.xarm.set_joint_value_target(pre_grasp_joints)
+            success_pre, _, _, _ = self.xarm.plan()
+            if success_pre:
+                self.pr_node.get_logger().info("[Grasp] Executing pre-grasp...")
+                if not self.xarm.execute():
+                    self.pr_node.get_logger().error("[Grasp] Pre-grasp execution failed.")
+                    return "except"
+                self.pr_node.get_logger().info("[Grasp] Pre-grasp reached.")
+                # TF再配信（現在時刻で更新）
+                self._publish_grasp_tfs(grasp_pose_base, pre_grasp_pose_base)
+            else:
+                self.pr_node.get_logger().warn(
+                    "[Grasp] Pre-grasp planning failed, attempting direct grasp."
+                )
+
+        # --- Step 2: Grasp ---
         self.xarm.set_joint_value_target(goal_joint_values)
         success, plan, _, _ = self.xarm.plan()
         if success:
-            # TODO(fake-exec): in fake mode, MoveIt execution can abort even after planning succeeds
-            # because current robot state is unavailable. Decide whether to skip execution,
-            # return success after planning, or plan to a fixed safe posture.
             self.pr_node.get_logger().info("Plan found, executing...")
             exec_success = self.xarm.execute()
             if not exec_success:
