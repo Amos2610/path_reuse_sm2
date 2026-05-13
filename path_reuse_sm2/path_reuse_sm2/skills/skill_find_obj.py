@@ -29,7 +29,13 @@ class SkillFindObj(State):
         workpiece = self.kwargs.get("workpiece") or self.kwargs.get("target") or ""
         target = self.kwargs.get("target") or workpiece
 
-        blackboard["obj_joints"] = self.kwargs.get("obj_joints", [])
+        # RAG は "joints"/"pose" で渡してくる。既に blackboard にあれば上書きしない
+        joints = self.kwargs.get("joints") or self.kwargs.get("obj_joints") or []
+        pose = self.kwargs.get("pose") or self.kwargs.get("grasp_pose") or None
+
+        blackboard["obj_joints"] = joints
+        if pose:
+            blackboard["grasp_pose"] = pose
         blackboard["workpiece"] = workpiece
         blackboard["target"] = target
         blackboard["object_class"] = self.kwargs.get("object_class", "")
