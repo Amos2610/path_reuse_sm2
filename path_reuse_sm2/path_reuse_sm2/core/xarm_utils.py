@@ -99,6 +99,7 @@ class XArmRobotUtils:
         ps.header.frame_id = self.default_pose_frame
         ps.header.stamp = RclpyTime().to_msg()  # time=0: use latest available TF
 
+        self.node.get_logger().info(f"[XArmRobotUtils] pose_to_pose_stamped input: {pose}")
         if self._is_sequence(pose) and len(pose) == 7:
             pose = list(pose)
             ps.pose.position.x = float(pose[0])

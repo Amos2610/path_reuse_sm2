@@ -14,7 +14,7 @@ class UpdatePathSeed(State):
         super().__init__(outcomes=["success", "except"])
         self.pr_node = node
         self.type = type
-        self.pr_client = PathSeedClient()
+        self.pr_client = None
 
         # kwargs から情報を取得
         self.source_id = kwargs.get("source_location", "HOME")
@@ -88,7 +88,10 @@ class UpdatePathSeed(State):
         self.pr_node.get_logger().info(f"[UpdatePathSeed] Saving to: {encode_pathseed_file}")
         # PathSeedClientの呼び出し
         # self, trajectory=None, trajectory_file_path=None, relative_saved_path=None):
-        success = self.pr_client.send_encode_path_seed(
+        if self.pr_client is None:
+            self.pr_node.get_logger().info("[UpdatePathSeed] Creating PathSeedClient for pathseed update.")
+            self.pr_client = PathSeedClient()
+        success, saved_path = self.pr_client.send_encode_path_seed(
             trajectory=update_trajectory,
             trajectory_file_path="",
             relative_saved_path=encode_pathseed_file,
@@ -97,7 +100,7 @@ class UpdatePathSeed(State):
             self.pr_node.get_logger().error("Failed to update path seed.")
             return "except"
 
-        self.pr_node.get_logger().info("Path seed updated successfully.")
+        self.pr_node.get_logger().info(f"Path seed updated successfully: {saved_path}")
 
         # Path Registry を更新
         self.registry.update(

@@ -45,12 +45,15 @@ class SkillGraspObj(State):
 
     def _bb_get(self, bb, key, default=None):
         try:
-            return bb.get(key, default)
+            return bb[key]
         except Exception:
             try:
-                return getattr(bb, key)
+                return bb.get(key, default)
             except Exception:
-                return default
+                try:
+                    return getattr(bb, key)
+                except Exception:
+                    return default
 
     def _bb_set(self, bb, key, value):
         try:
@@ -71,8 +74,28 @@ class SkillGraspObj(State):
 
     def get_blackboard(self, bb) -> bool:
         obj_joints = self._bb_get(bb, "obj_joints")
+        kwargs_pose = self.kwargs.get("pose") or self.kwargs.get("grasp_pose")
+        kwargs_pose_frame_id = (
+            self.kwargs.get("grasp_pose_frame_id")
+            or self.kwargs.get("pose_frame_id")
+            or self.kwargs.get("frame_id")
+            or ""
+        )
+        bb_camera_frame_id = self._bb_get(bb, "camera_frame_id", "")
+        bb_grasp_pose_frame_id = self._bb_get(bb, "grasp_pose_frame_id", "")
+        self.node.get_logger().info(
+            f"[SkillGraspObj][frame] before resolve: "
+            f"kwargs.grasp_pose_frame_id={repr(kwargs_pose_frame_id)}, "
+            f"kwargs.pose_type={type(kwargs_pose).__name__}, "
+            f"kwargs.pose_len={len(kwargs_pose) if isinstance(kwargs_pose, (list, tuple)) else 'n/a'}, "
+            f"bb.camera_frame_id={repr(bb_camera_frame_id)}, "
+            f"bb.grasp_pose_frame_id={repr(bb_grasp_pose_frame_id)}"
+        )
 
         if self._is_joint_list(obj_joints):
+            if kwargs_pose_frame_id:
+                self._bb_set(bb, "pose_frame_id", kwargs_pose_frame_id)
+                self._bb_set(bb, "grasp_pose_frame_id", kwargs_pose_frame_id)
             return True
 
         joints_from_rag = self.kwargs.get("joints")
@@ -80,13 +103,22 @@ class SkillGraspObj(State):
             joints = [float(v) for v in joints_from_rag[:6]]
             self.node.get_logger().info(f"[SkillGraspObj] Using joints from RAG args: {joints}")
             self._bb_set(bb, "obj_joints", joints)
+            if kwargs_pose_frame_id:
+                self._bb_set(bb, "pose_frame_id", kwargs_pose_frame_id)
+                self._bb_set(bb, "grasp_pose_frame_id", kwargs_pose_frame_id)
             return True
 
         if obj_joints is not None:
+            if kwargs_pose_frame_id:
+                self._bb_set(bb, "pose_frame_id", kwargs_pose_frame_id)
+                self._bb_set(bb, "grasp_pose_frame_id", kwargs_pose_frame_id)
             self.node.get_logger().info("[SkillGraspObj] obj_joints is pose-like. Grasp state will resolve it.")
             return True
 
-        if self.kwargs.get("pose") is not None or self.kwargs.get("grasp_pose") is not None:
+        if kwargs_pose is not None:
+            if kwargs_pose_frame_id:
+                self._bb_set(bb, "pose_frame_id", kwargs_pose_frame_id)
+                self._bb_set(bb, "grasp_pose_frame_id", kwargs_pose_frame_id)
             self.node.get_logger().info("[SkillGraspObj] grasp pose exists. Grasp state will compute IK.")
             return True
 

@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 from typing import Any, Optional
+import time
 import rclpy
 from rclpy.duration import Duration
 from rclpy.time import Time
@@ -44,6 +45,8 @@ class FindObj(State):
         qos = qos_profile_sensor_data
         self.image_topic = kwargs.get("image_topic", "/camera/camera/color/image_raw")
         self.camera_info_topic = kwargs.get("camera_info_topic", "/camera/camera/color/camera_info")
+        self.camera_info_wait_timeout = float(kwargs.get("camera_info_wait_timeout", 2.0))
+        self.camera_info_wait_poll_sec = float(kwargs.get("camera_info_wait_poll_sec", 0.05))
 
         self.image_msg: Optional[Image] = None
         self.cv2_image = None
@@ -59,6 +62,10 @@ class FindObj(State):
         )
         self.info_sub = self.pr_node.create_subscription(
             CameraInfo, self.camera_info_topic, self._camera_info_callback, qos
+        )
+        self.pr_node.get_logger().info(
+            f"[FindObj][frame] subscribing camera_info_topic={self.camera_info_topic}, "
+            f"initial camera_frame_id={repr(self.camera_frame_id)}"
         )
 
         # --- TF（将来の pixel→3D 変換用） ---
@@ -83,6 +90,9 @@ class FindObj(State):
     def _camera_info_callback(self, msg: CameraInfo) -> None:
         self.info_msg = msg
         self.camera_frame_id = msg.header.frame_id
+        self.pr_node.get_logger().info(
+            f"[FindObj][frame] camera_info callback frame_id={repr(msg.header.frame_id)}"
+        )
         if self.camera_model is not None:
             try:
                 self.camera_model.fromCameraInfo(msg)
@@ -94,6 +104,32 @@ class FindObj(State):
                 f"size=({msg.width}x{msg.height})"
             )
             self._logged_camera_info = True
+
+    def _wait_for_camera_info(self) -> None:
+        if self.info_msg is not None and self.camera_frame_id:
+            return
+
+        if self.camera_info_wait_timeout <= 0.0:
+            return
+
+        self.pr_node.get_logger().info(
+            f"[FindObj][frame] waiting for CameraInfo on {self.camera_info_topic} "
+            f"up to {self.camera_info_wait_timeout:.2f}s"
+        )
+        deadline = time.monotonic() + self.camera_info_wait_timeout
+        while rclpy.ok() and time.monotonic() < deadline:
+            if self.info_msg is not None and self.camera_frame_id:
+                self.pr_node.get_logger().info(
+                    f"[FindObj][frame] CameraInfo received while waiting: "
+                    f"frame_id={repr(self.camera_frame_id)}"
+                )
+                return
+            time.sleep(self.camera_info_wait_poll_sec)
+
+        self.pr_node.get_logger().warn(
+            f"[FindObj][frame] timed out waiting for CameraInfo on {self.camera_info_topic}. "
+            f"info_received={self.info_msg is not None}, camera_frame_id={repr(self.camera_frame_id)}"
+        )
 
     # ------------------------------------------------------------------
     # メイン処理
@@ -118,6 +154,29 @@ class FindObj(State):
         if resolved_workpiece:
             self.workpiece = resolved_workpiece
             _bb_set("workpiece", resolved_workpiece)
+
+        self._wait_for_camera_info()
+
+        bb_camera_frame_id = _bb_get("camera_frame_id", "")
+        bb_grasp_pose_frame_id = _bb_get("grasp_pose_frame_id", "")
+        self.pr_node.get_logger().info(
+            f"[FindObj][frame] execute current camera_frame_id={repr(self.camera_frame_id)}, "
+            f"info_received={self.info_msg is not None}, "
+            f"bb.camera_frame_id={repr(bb_camera_frame_id)}, "
+            f"bb.grasp_pose_frame_id={repr(bb_grasp_pose_frame_id)}"
+        )
+
+        if self.camera_frame_id:
+            _bb_set("camera_frame_id", self.camera_frame_id)
+            _bb_set("grasp_pose_frame_id", self.camera_frame_id)
+            self.pr_node.get_logger().info(
+                f"[FindObj][frame] exported to blackboard: camera_frame_id={repr(self.camera_frame_id)}"
+            )
+        else:
+            self.pr_node.get_logger().warn(
+                f"[FindObj][frame] camera_frame_id is empty. "
+                f"No CameraInfo has been received from {self.camera_info_topic} before execute."
+            )
 
         # RAG/KB から認識結果が既に得られていれば検出をスキップ
         bb_grasp_pose = _bb_get("grasp_pose", None)

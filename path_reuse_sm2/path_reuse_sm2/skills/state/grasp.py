@@ -3,7 +3,7 @@
 import os
 import time
 from copy import deepcopy
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 from yasmin.state import State
 from geometry_msgs.msg import TransformStamped
 from tf2_ros import TransformBroadcaster
@@ -31,7 +31,19 @@ class Grasp(XArmUtilsWrapper, State):
             move_group=kwargs.get("move_group", "xarm6"),
             ik_service=kwargs.get("ik_service", "/compute_ik"),
             xarm=self.xarm,
-            default_pose_frame=kwargs.get("grasp_pose_frame_id", "camera_color_optical_frame"),
+            default_pose_frame=(
+                kwargs.get("grasp_pose_frame_id")
+                or kwargs.get("pose_frame_id")
+                or "camera_color_optical_frame"
+            ),
+        )
+        self.pr_node.get_logger().info(
+            f"[Grasp][frame] init base_frame={repr(self.robot_utils.base_frame)}, "
+            f"default_pose_frame={repr(self.robot_utils.default_pose_frame)}, "
+            f"kwargs.grasp_pose_frame_id={repr(kwargs.get('grasp_pose_frame_id', ''))}, "
+            f"kwargs.pose_frame_id={repr(kwargs.get('pose_frame_id', ''))}, "
+            f"grasp_pose_type={type(self.grasp_pose).__name__}, "
+            f"grasp_pose_len={len(self.grasp_pose) if isinstance(self.grasp_pose, (list, tuple)) else 'n/a'}"
         )
 
         # Path Registry
@@ -275,11 +287,40 @@ class Grasp(XArmUtilsWrapper, State):
         self.pr_node.get_logger().info(f"Grasp state executed.")
         self.pr_node.get_logger().info("------------------------------------------------")
         self._current_blackboard = blackboard
+
+        def _bb_get(key, default=None):
+            try:
+                return blackboard[key]
+            except Exception:
+                try:
+                    value = blackboard.get(key)
+                    return value if value is not None else default
+                except Exception:
+                    try:
+                        return getattr(blackboard, key)
+                    except Exception:
+                        return default
+
+        bb_pose_frame_id = (
+            _bb_get("grasp_pose_frame_id", "")
+            or _bb_get("pose_frame_id", "")
+            or _bb_get("camera_frame_id", "")
+        )
+        self.pr_node.get_logger().info(
+            f"[Grasp][frame] execute before default update: "
+            f"bb.grasp_pose_frame_id={repr(_bb_get('grasp_pose_frame_id', ''))}, "
+            f"bb.pose_frame_id={repr(_bb_get('pose_frame_id', ''))}, "
+            f"bb.camera_frame_id={repr(_bb_get('camera_frame_id', ''))}, "
+            f"current_default_pose_frame={repr(self.robot_utils.default_pose_frame)}"
+        )
+        if bb_pose_frame_id:
+            self.robot_utils.default_pose_frame = bb_pose_frame_id
+            self.pr_node.get_logger().info(
+                f"[Grasp][frame] default grasp pose frame set from blackboard: {repr(bb_pose_frame_id)}"
+            )
+
         # blackboard の grasp_pose を優先して self.grasp_pose に反映する
-        try:
-            bb_grasp_pose = blackboard.get("grasp_pose")
-        except Exception:
-            bb_grasp_pose = getattr(blackboard, "grasp_pose", None)
+        bb_grasp_pose = _bb_get("grasp_pose", None)
         if bb_grasp_pose is not None:
             self.grasp_pose = bb_grasp_pose
             self.pr_node.get_logger().info(
@@ -287,13 +328,7 @@ class Grasp(XArmUtilsWrapper, State):
             )
 
         # 認識結果（FindObjなど）があればそれを優先、なければ RAG/KB からの値を使う
-        try:
-            detected_obj_joints = blackboard.get("obj_joints")
-        except Exception:
-            try:
-                detected_obj_joints = getattr(blackboard, "obj_joints")
-            except Exception:
-                detected_obj_joints = None
+        detected_obj_joints = _bb_get("obj_joints", None)
 
         if self.robot_utils.is_joint_list(detected_obj_joints):
             self.obj_joints = self.robot_utils.normalize_joint_list(detected_obj_joints)
