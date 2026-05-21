@@ -112,6 +112,6 @@ class UpdatePathSeed(State):
         self.pr_node.get_logger().info(f"[UpdatePathSeed] Registry updated: ({self.source_id} -> {self.target_id}) action={self.action_name}")
 
         self.pr_node.set_parameters(
-            [Parameter(name=f"{self.type}_phase", value="Imprementation_Phase")]
+            [Parameter(name=f"{self.type}_phase", value="Implement_Phase")]
         )
         return "success"

@@ -454,34 +454,30 @@ class Grasp(XArmUtilsWrapper, State):
             # PathSeedからSTOMP用軌道をセット
             self.xarm.set_move_group_parameter("stomp.use_custom_trajectory", True)
             self.pr_node.get_logger().info(f"Grasp phase: {self.phase}")
-            # 1. Registry から検索
-            reg_path = self.registry.get_path_seed(self.source_id, self.target_id, self.skill_name)
-
-            if reg_path:
-                self.pr_node.get_logger().info(f"[Grasp] Found entry in registry: {reg_path}")
-                # "ex1_..." 形式なら prefix を補完
-                if not reg_path.startswith("src/") and not reg_path.startswith("/"):
-                    pathseed_file = "src/path_reuse_method/pathseeds/Library/" + reg_path
-                else:
-                    pathseed_file = reg_path
-            # 2. RAG からの直接指定
-            elif self.path_seed_path:
-                self.pr_node.get_logger().info(f"[Grasp] Using path_seed_path from RAG: {self.path_seed_path}")
+            # 1. RAG からの直接指定
+            if self.path_seed_path:
                 pathseed_file = self.path_seed_path
-            # 3. ROS パラメータ（Phase に応じる）
-            elif self.phase == "Initial_Phase":
-                pathseed_file = self.pr_node.get_parameter("pathseed_grasp").value
-            elif self.phase == "Imprementation_Phase":
-                default_pathseed_file = self.pr_node.get_parameter("pathseed_grasp").value
-                # updateしたパスシードはex1_pick_and_place/updated/pathseed_pick.txtに保存される想定
-                pathseed_file = "/".join(default_pathseed_file.split("/")[:-3]) + "/updated/pathseed_pick.txt"
             else:
-                self.pr_node.get_logger().error(f"Unknown phase: {self.phase}")
-                return "except"
-
+                # 2. path_reuse_method の selector で自動選択
+                pathseed_file = self.pr_client.select_best_path_seed(
+                    environment_id="desk_scene_v1",
+                    skill_name="pick",
+                    start_joints=start_joint_values,
+                    goal_joints=goal_joint_values,
+                )
+                # 3. フォールバック: ROS パラメータ（Phase に応じる）
+                if not pathseed_file:
+                    if self.phase == "Initial_Phase":
+                        pathseed_file = self.pr_node.get_parameter("pathseed_grasp").value
+                    elif self.phase in ("Implement_Phase", "Imprementation_Phase"):
+                        default_pathseed_file = self.pr_node.get_parameter("pathseed_grasp").value
+                        pathseed_file = "/".join(default_pathseed_file.split("/")[:-3]) + "/updated/pathseed_pick.txt"
+                    else:
+                        self.pr_node.get_logger().error(f"Unknown phase: {self.phase}")
+                        return "except"
+                
             # 絶対パスに変換
             pathseed_file = self._resolve_pathseed_file(pathseed_file)
-
             self.pr_node.get_logger().info(f"[Grasp] Using pathseed file: {pathseed_file}")
             success_generated = self.generate_stomp_path_from_pathseed(
                 file_path=pathseed_file,
