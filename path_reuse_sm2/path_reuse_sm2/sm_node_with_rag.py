@@ -52,10 +52,10 @@ class MonitoredSkillState(State):
         self._node.get_logger().info(
             f"[PRSM Monitor] >>> Entering skill [{self._skill_index}]: {self._skill_name}"
         )
-        self._node.set_parameters([
-            Parameter('prsm_current_skill', Parameter.Type.STRING, self._skill_name),
-            Parameter('prsm_current_skill_index', Parameter.Type.INTEGER, self._skill_index),
-        ])
+        self._node._update_monitoring_params(
+            prsm_current_skill=self._skill_name,
+            prsm_current_skill_index=self._skill_index
+        )
 
         # --- 実行 ---
         outcome = self._inner.execute(blackboard)
@@ -96,6 +96,13 @@ class PRSMNode(Node):
             callback_group=self._sm_cb_group,
         )
 
+        from std_msgs.msg import String
+        self._monitor_pub = self.create_publisher(
+            String,
+            '/prsm/skill_status',
+            100
+        )
+
         self.get_logger().info("[PRSM] Node initialized. Waiting for /prsm_task_set service calls...")
 
     # -------------------------
@@ -131,7 +138,8 @@ class PRSMNode(Node):
         self.declare_parameter("prsm_error_message", "")             # エラー詳細
 
     def _update_monitoring_params(self, **kwargs) -> None:
-        """監視用パラメータを一括更新するヘルパー。"""
+        """監視用パラメータを一括更新し、同時にTopicでも配信する。"""
+        # --- 1) パラメータ更新 (後方互換性のため残す) ---
         params = []
         type_map = {
             str: Parameter.Type.STRING,
@@ -143,6 +151,25 @@ class PRSMNode(Node):
             params.append(Parameter(key, ptype, value))
         if params:
             self.set_parameters(params)
+            
+        # --- 2) Topicによるリアルタイム通知 ---
+        import json
+        from std_msgs.msg import String
+        
+        # 既存の状態を読み込みつつ新しい状態をマージする
+        current_status = {
+            "prsm_status": self.get_parameter("prsm_status").value,
+            "prsm_current_skill": self.get_parameter("prsm_current_skill").value,
+            "prsm_current_skill_index": self.get_parameter("prsm_current_skill_index").value,
+            "prsm_total_skills": self.get_parameter("prsm_total_skills").value,
+            "prsm_outcome": self.get_parameter("prsm_outcome").value,
+            "prsm_error_message": self.get_parameter("prsm_error_message").value,
+        }
+        current_status.update(kwargs)
+        
+        if hasattr(self, '_monitor_pub'):
+            msg = String(data=json.dumps(current_status))
+            self._monitor_pub.publish(msg)
 
     # -------------------------
     # TaskSet サービスコールバック
@@ -192,6 +219,7 @@ class PRSMNode(Node):
         #    [{"name": "SkillFindObj", "args": {...}}, ...] の形に変換
         flow: List[Dict[str, Any]] = []
         for i, s in enumerate(skills):
+            pose_frame_id = getattr(s, "pose_frame_id", "")
             step = {
                 "name": s.skill_name,
                 "args": {
@@ -201,6 +229,8 @@ class PRSMNode(Node):
                     "workpiece": s.workpiece,
                     "joints": list(s.joints),
                     "pose": list(s.pose),
+                    "pose_frame_id": pose_frame_id,
+                    "grasp_pose_frame_id": pose_frame_id,
                     "path_seed_path": s.path_seed_path,
                 },
             }
@@ -208,9 +238,15 @@ class PRSMNode(Node):
             self.get_logger().info(
                 f"Skill[{i}] name={repr(s.skill_name)} target={repr(s.target_location)} workpiece={repr(s.workpiece)} path_seed_path={repr(s.path_seed_path)}"
             )
+            self.get_logger().info(
+                f"[PRSM][frame] Skill[{i}] name={repr(s.skill_name)} "
+                f"pose_len={len(s.pose)}, pose_frame_id={repr(pose_frame_id)}"
+            )
 
         # 2) flow に応じてステートマシンを作り直す
+        self.get_logger().info("[PRSM] Building state machine...")
         self.sm = self._build_state_machine(flow)
+        self.get_logger().info("[PRSM] State machine built.")
 
         # 3) Blackboard に Skill[] を詰める
         bb = Blackboard()
