@@ -217,6 +217,7 @@ class PRSMNode(Node):
         #    [{"name": "SkillFindObj", "args": {...}}, ...] の形に変換
         flow: List[Dict[str, Any]] = []
         for i, s in enumerate(skills):
+            pose_frame_id = getattr(s, "pose_frame_id", "")
             step = {
                 "name": s.skill_name,
                 "args": {
@@ -226,6 +227,8 @@ class PRSMNode(Node):
                     "workpiece": s.workpiece,
                     "joints": list(s.joints),
                     "pose": list(s.pose),
+                    "pose_frame_id": pose_frame_id,
+                    "grasp_pose_frame_id": pose_frame_id,
                     "path_seed_path": s.path_seed_path,
                 },
             }
@@ -233,9 +236,15 @@ class PRSMNode(Node):
             self.get_logger().info(
                 f"Skill[{i}] name={repr(s.skill_name)} target={repr(s.target_location)} workpiece={repr(s.workpiece)} path_seed_path={repr(s.path_seed_path)}"
             )
+            self.get_logger().info(
+                f"[PRSM][frame] Skill[{i}] name={repr(s.skill_name)} "
+                f"pose_len={len(s.pose)}, pose_frame_id={repr(pose_frame_id)}"
+            )
 
         # 2) flow に応じてステートマシンを作り直す
+        self.get_logger().info("[PRSM] Building state machine...")
         self.sm = self._build_state_machine(flow)
+        self.get_logger().info("[PRSM] State machine built.")
 
         # 3) Blackboard に Skill[] を詰める
         bb = Blackboard()

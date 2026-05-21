@@ -18,7 +18,7 @@ class Put(XArmUtilsWrapper, State):
         XArmUtilsWrapper.__init__(self)
         self.pr_node = node
         self.kwargs = kwargs
-        self.pr_client = PathSeedClient()
+        self.pr_client = None
         # ActionServerの初期化
         self._action_server = ActionServer(
             self.pr_node,
@@ -135,6 +135,9 @@ class Put(XArmUtilsWrapper, State):
         - ROS1のDecoder+param set の代わりに PathSeedClient を使用
         """
         try:
+            if self.pr_client is None:
+                self.pr_node.get_logger().info("[Put] Creating PathSeedClient for STOMP path generation.")
+                self.pr_client = PathSeedClient()
             self.pr_node.get_logger().info("[Put] Decoding pathseed via PathSeedClient...")
             decoded_path = self.pr_client.send_decode_path_seed(file_path, start_joint_values, goal_joint_values)
             if decoded_path is None:
