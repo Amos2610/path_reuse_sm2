@@ -75,7 +75,7 @@ class PRSMNode(Node):
         """本ノードが受け取るROSパラメータを宣言する。"""
         # flow: ["SkillGraspObj", ...] または [{"name": "SkillGraspObj", "args": {...}}, ...]
         # self.declare_parameter("flow", ["SkillMove", "SkillFindObj", "SkillGraspObj", "SkillPutObj"])
-        self.declare_parameter("flow", ["SkillMove" "SkillFindObj"])
+        self.declare_parameter("flow", ["SkillMove", "SkillFindObj"])
         # flow_args_json: {"SkillGraspObj": {"speed": 0.5}, "SkillPutObj": {"place": "binA"}} のような追加引数
         self.declare_parameter("flow_args_json", "")
         # start_delay: Viewer購読準備のための起動遅延（秒）
