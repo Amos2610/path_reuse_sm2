@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch_ros.actions import Node
 from launch.substitutions import PathJoinSubstitution, LaunchConfiguration
 from launch_ros.substitutions import FindPackageShare
@@ -14,6 +15,11 @@ def generate_launch_description():
         'params_file',
         default_value=default_params,
         description='YAML file with node parameters'
+    )
+    declare_use_viewer = DeclareLaunchArgument(
+        'use_viewer',
+        default_value='false',
+        description='Launch yasmin_viewer node'
     )
 
     params_file = LaunchConfiguration('params_file')
@@ -38,10 +44,12 @@ def generate_launch_description():
         name='yasmin_viewer',
         output='screen',
         parameters=[{'port': 8001}],
+        condition=IfCondition(LaunchConfiguration('use_viewer')),
     )
 
     return LaunchDescription([
         declare_params,
+        declare_use_viewer,
         viewer,
         prsm,
     ])
