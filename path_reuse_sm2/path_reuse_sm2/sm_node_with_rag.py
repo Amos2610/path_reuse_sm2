@@ -118,6 +118,8 @@ class PRSMNode(Node):
         self.declare_parameter("grasp_phase", "Initial_Phase")
         self.declare_parameter("put_phase", "Initial_Phase")
         self.declare_parameter("pathseed_registry_path", "")
+        self.declare_parameter("grasp_require_approval", True)
+        self.declare_parameter("grasp_approval_timeout_sec", 0.0)
 
         # --- 監視用パラメータ ---
         # 実行監視ノードがポーリングして、ロボットの現在状態を把握するためのパラメータ群
