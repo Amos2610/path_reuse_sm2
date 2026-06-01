@@ -175,6 +175,9 @@ class XArmRobotUtils:
         target = self._transform_pose_to_base(target)
         if target is None:
             return None
+        
+        # baseのz座標は決め打ち
+        target.pose.position.z = 0.125
 
         if self._ik_cli is None:
             self._ik_cli = self.node.create_client(GetPositionIK, self.ik_service)

@@ -7,7 +7,7 @@ from rclpy.action import ActionServer
 from trajectory_msgs.msg import JointTrajectory
 from moveit_msgs.action import ExecuteTrajectory
 from path_reuse_method.path_seed_client import PathSeedClient
-from path_reuse_sm2.core.xarm_utils import XArmUtilsWrapper
+from path_reuse_sm2.core.xarm_utils import XArmUtilsWrapper, XArmRobotUtils
 from path_reuse_sm2.core.path_registry import PathRegistry
 import os
 
@@ -44,6 +44,15 @@ class Put(XArmUtilsWrapper, State):
             registry_path = os.path.join(ws_root, registry_path)
             
         self.registry = PathRegistry(registry_path)
+
+        self.robot_utils = XArmRobotUtils(
+            self.pr_node,
+            base_frame=kwargs.get("base_frame", "link_base"),
+            ee_link=kwargs.get("ee_link", "link_tcp"),
+            move_group=kwargs.get("move_group", "xarm6"),
+            ik_service=kwargs.get("ik_service", "/compute_ik"),
+            xarm=self.xarm,
+        )
 
         # ROS1互換フィールド名
         self.try_count: int = 0
@@ -155,21 +164,27 @@ class Put(XArmUtilsWrapper, State):
             return False
 
     def set_start_and_goal_joint_values(self, blackboard: Any) -> Optional[Tuple[List[float], List[float]]]:
-        obj_joints = getattr(blackboard, "obj_joints", None)
-        if obj_joints is None:
-            self.pr_node.get_logger().error("Blackboard missing 'obj_joints'.")
-            return None
-        
-        # container_joints = getattr(blackboard, "container_joints", None)
+        # Start = current arm position (the robot is holding the object here)
+        start_joint_values = self.robot_utils.get_current_joint_values()
+        if start_joint_values is None:
+            # Fall back to obj_joints on blackboard if current joints unavailable (e.g. fake mode)
+            obj_joints = blackboard["obj_joints"] if "obj_joints" in blackboard else None
+            if obj_joints:
+                self.pr_node.get_logger().warn("[Put] Current joint values unavailable. Using obj_joints from BB as start.")
+                start_joint_values = obj_joints
+            else:
+                self.pr_node.get_logger().error("[Put] Cannot determine start joint values.")
+                return None
+        self.pr_node.get_logger().info(f"Put start joint values: {start_joint_values}")
+
+        # Goal = container/target position
         container_joints = []
-        # jointsの値がある場合は優先して使用する
         if self.joints:
             self.pr_node.get_logger().info(f"Moving to target joints from RAG: {self.joints}")
             container_joints = self.joints
-        # jointsの値は空でposeの値がある場合はposeをIK変換して使用する
-        elif not self.joints and self.pose:
+        elif self.pose:
             self.pr_node.get_logger().info(f"Moving to target pose from RAG: {self.pose}")
-            container_joints = getattr(blackboard, "container_joints", None)
+            container_joints = blackboard["container_joints"] if "container_joints" in blackboard else None
             # TODO: IK計算して関節角度に変換する処理を実装する
             # container_joints = self.convert_pose_to_joints(self.pose)
         else:
@@ -178,16 +193,9 @@ class Put(XArmUtilsWrapper, State):
         if container_joints is None:
             self.pr_node.get_logger().error("Blackboard missing 'container_joints'.")
             return None
-        
-        #TODO: ここでcontainer_jointsからTF変換，逆運動学を使ってstart_joint_valuesを計算する
-        # 一旦container_jointsのまま使う
+
         goal_joint_values = container_joints
         self.pr_node.get_logger().info(f"Put goal joint values: {goal_joint_values}")
-        
-        #TODO: ここでobj_jointsからTF変換，逆運動学を使ってgoal_joint_valuesを計算する
-        # 一旦obj_jointsのまま使う
-        start_joint_values = obj_joints
-        self.pr_node.get_logger().info(f"Put start joint values: {start_joint_values}")
         return start_joint_values, goal_joint_values
 
     def execute(self, blackboard=None):
@@ -195,14 +203,6 @@ class Put(XArmUtilsWrapper, State):
         self.pr_node.get_logger().info(f"Put state executed.")
         self.pr_node.get_logger().info("------------------------------------------------")
         self._current_blackboard = blackboard
-        
-        # Blackboard に obj_joints がない場合は、自身の kwargs (RAG由来) から補完を試みる
-        if blackboard and (not hasattr(blackboard, "obj_joints") or blackboard.obj_joints is None):
-            joints_from_rag = self.kwargs.get("joints")
-            if joints_from_rag:
-                self.pr_node.get_logger().info(f"[Put] Syncing obj_joints to BB from RAG args: {joints_from_rag}")
-                setattr(blackboard, "obj_joints", joints_from_rag)
-        
         self.phase = self.pr_node.get_parameter("put_phase").value
         # env = blackboard.get("env", {})
         # pipeline = blackboard.get("pipeline", "stomp")

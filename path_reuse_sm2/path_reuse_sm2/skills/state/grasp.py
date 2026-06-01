@@ -450,9 +450,15 @@ class Grasp(XArmUtilsWrapper, State):
         use_pathseed = self.pr_node.get_parameter("use_pathseed").value
         self.pr_node.get_logger().info(f"use_pathseed: {use_pathseed}")
         if use_pathseed:
-            self.xarm.set_planning_pipeline("stomp")
+            try:
+                self.xarm.set_planning_pipeline("stomp")
+            except Exception as e:
+                self.pr_node.get_logger().warn(f"[Grasp] set_planning_pipeline failed but continue: {e}")
             # PathSeedからSTOMP用軌道をセット
-            self.xarm.set_move_group_parameter("stomp.use_custom_trajectory", True)
+            try:
+                self.xarm.set_move_group_parameter("stomp.use_custom_trajectory", True)
+            except Exception as e:
+                self.pr_node.get_logger().warn(f"[Grasp] set_move_group_parameter failed but continue: {e}")
             self.pr_node.get_logger().info(f"Grasp phase: {self.phase}")
             # 1. RAG からの直接指定
             if self.path_seed_path:
@@ -488,7 +494,10 @@ class Grasp(XArmUtilsWrapper, State):
                 self.pr_node.get_logger().error("Failed to generate STOMP path from PathSeed.")
                 return "except"
         else:
-            self.xarm.set_planning_pipeline("ompl")
+            try:
+                self.xarm.set_planning_pipeline("ompl")
+            except Exception as e:
+                self.pr_node.get_logger().warn(f"[Grasp] set_planning_pipeline(ompl) failed but continue: {e}")
 
         ##############################
         ### Planning and Execution ###
@@ -526,7 +535,12 @@ class Grasp(XArmUtilsWrapper, State):
             if self._current_blackboard is not None:
                 setattr(self._current_blackboard, 'grasp_trajectory', deepcopy(plan))
                 self.pr_node.get_logger().info(f"[Grasp] stored grasp_trajectory to BB (points={len(plan.points)})")
-            self.xarm.gripper_close()
+            # spin周りでエラーが出るため、try-exceptで囲む。
+            #TODO: 根本的にはXArmUtils（xarm_utils_py）が内部で xarm_core_node を独自の executor でスピンさせているのが原因と思われるため、将来的にはそちらの改修も検討。
+            try:
+                self.xarm.gripper_close()
+            except Exception as e:
+                self.pr_node.get_logger().warn(f"[Grasp] gripper_close failed but continue: {e}")
             return "success"
         else:
             self.pr_node.get_logger().warn("No valid plan found, retrying...")
