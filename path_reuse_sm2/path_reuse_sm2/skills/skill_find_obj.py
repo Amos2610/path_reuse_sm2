@@ -25,15 +25,46 @@ class SkillFindObj(State):
         self.kwargs = kwargs   
 
     def set_blackboard(self, blackboard: Dict[str, Any]) -> bool:
+        def _bb_get(key, default=None):
+            try:
+                return blackboard[key]
+            except Exception:
+                try:
+                    return getattr(blackboard, key)
+                except Exception:
+                    return default
+
         # default values for find object skill
         workpiece = self.kwargs.get("workpiece") or self.kwargs.get("target") or ""
         target = self.kwargs.get("target") or workpiece
 
-        blackboard["obj_joints"] = self.kwargs.get("obj_joints", [])
+        # RAG は "joints"/"pose" で渡してくる。既に blackboard にあれば上書きしない
+        joints = self.kwargs.get("joints") or self.kwargs.get("obj_joints") or []
+        pose = self.kwargs.get("pose") or self.kwargs.get("grasp_pose") or None
+        pose_frame_id = (
+            self.kwargs.get("grasp_pose_frame_id")
+            or self.kwargs.get("pose_frame_id")
+            or self.kwargs.get("frame_id")
+            or ""
+        )
+
+        blackboard["obj_joints"] = joints
+        if pose:
+            blackboard["grasp_pose"] = pose
+        if pose_frame_id:
+            blackboard["pose_frame_id"] = pose_frame_id
+            blackboard["grasp_pose_frame_id"] = pose_frame_id
         blackboard["workpiece"] = workpiece
         blackboard["target"] = target
         blackboard["object_class"] = self.kwargs.get("object_class", "")
         blackboard["query"] = self.kwargs.get("query", "")
+        self.node.get_logger().info(
+            f"[SkillFindObj][frame] set_blackboard pose_type={type(pose).__name__}, "
+            f"pose_len={len(pose) if isinstance(pose, (list, tuple)) else 'n/a'}, "
+            f"kwargs.grasp_pose_frame_id={repr(pose_frame_id)}, "
+            f"bb.camera_frame_id={repr(_bb_get('camera_frame_id', ''))}, "
+            f"bb.grasp_pose_frame_id={repr(_bb_get('grasp_pose_frame_id', ''))}"
+        )
 
         return True
 
