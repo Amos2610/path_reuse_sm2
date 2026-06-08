@@ -10,6 +10,7 @@ TaskSet サービスで受け取った Skill[] から flow と StateMachine を�
 各スキルの実行状況をリアルタイムに取得可能。
 """
 
+import threading
 from typing import Any, Dict, List
 
 import rclpy
@@ -27,8 +28,43 @@ from yasmin.state_machine import StateMachine
 from yasmin_ros.basic_outcomes import SUCCEED, ABORT, CANCEL
 # from yasmin_viewer import YasminViewerPub  # 必要になったら復活
 
+from moveit_msgs.msg import DisplayTrajectory, RobotTrajectory
+
 from path_reuse_sm2.core.plugin import discover, get, names
 from path_reuse_sm2.skills.skill_standard import SkillStart, SkillRAGBridge
+
+
+class TrajectoryLoopPublisher:
+    """simulate_only 時に DisplayTrajectory を一定間隔で再パブリッシュする。"""
+
+    def __init__(self, publisher):
+        self._pub = publisher
+        self._msg = None
+        self._interval = 5.0
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self, msg, interval: float = 5.0):
+        """ループ開始（既存ループがあれば停止して再起動）。"""
+        self.stop()
+        self._msg = msg
+        self._interval = interval
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        """ループ停止。"""
+        if self._thread and self._thread.is_alive():
+            self._stop_event.set()
+            self._thread.join(timeout=2.0)
+        self._msg = None
+        self._thread = None
+
+    def _loop(self):
+        while not self._stop_event.wait(self._interval):
+            if self._msg is not None:
+                self._pub.publish(self._msg)
 
 
 class MonitoredSkillState(State):
@@ -102,6 +138,16 @@ class PRSMNode(Node):
             '/prsm/skill_status',
             100
         )
+        self._display_trajectory_pub = self.create_publisher(
+            DisplayTrajectory,
+            '/display_planned_path',
+            10,
+        )
+        self._viz_traj_loop = TrajectoryLoopPublisher(self._display_trajectory_pub)
+
+        # Pre-planned trajectories stored during simulate_only mode
+        # key: "{skill_name}_{step_index}", value: JointTrajectory
+        self._pre_planned_trajectories: dict = {}
 
         self.get_logger().info("[PRSM] Node initialized. Waiting for /prsm_task_set service calls...")
 
@@ -125,6 +171,9 @@ class PRSMNode(Node):
         self.declare_parameter("grasp_phase", "Initial_Phase")
         self.declare_parameter("put_phase", "Initial_Phase")
         self.declare_parameter("pathseed_registry_path", "")
+
+        # simulate_only: True=計画のみ(RViz表示+保存), False=実行
+        self.declare_parameter("prsm_simulate_only", False)
 
         # --- 監視用パラメータ ---
         # 実行監視ノードがポーリングして、ロボットの現在状態を把握するためのパラメータ群
@@ -198,7 +247,12 @@ class PRSMNode(Node):
             return response
 
         task: TaskInfo = request.task
+        simulate_only: bool = task.simulate_only
         skills = task.skills
+
+        # Update prsm_simulate_only parameter so skills can read it
+        self.set_parameters([Parameter("prsm_simulate_only", Parameter.Type.BOOL, simulate_only)])
+        self.get_logger().info(f"[PRSM] simulate_only={simulate_only}")
 
         if len(skills) == 0:
             self.get_logger().warn("[PRSM] Received empty task.")
@@ -252,13 +306,22 @@ class PRSMNode(Node):
             )
 
         # 2) flow に応じてステートマシンを作り直す
-        self.get_logger().info("[PRSM] Building state machine...")
+        if not simulate_only:
+            self._viz_traj_loop.stop()
         self.sm = self._build_state_machine(flow)
         self.get_logger().info("[PRSM] State machine built.")
 
-        # 3) Blackboard に Skill[] を詰める
+        # 3) Blackboard に Skill[] と事前計画軌道を詰める
         bb = Blackboard()
-        bb["skills"] = list(skills)  # Skill.msg の配列をそのまま渡す
+        bb["skills"] = list(skills)
+        if not simulate_only and self._pre_planned_trajectories:
+            bb["pre_planned_trajectories"] = self._pre_planned_trajectories.copy()
+            self.get_logger().info(
+                f"[PRSM] Passing {len(self._pre_planned_trajectories)} pre-planned trajectories to execution."
+            )
+        else:
+            # シミュレーション開始 or 保存済み軌道なし: クリアして新規計画
+            self._pre_planned_trajectories.clear()
 
         # 4) 実行（このサービス呼び出しの中で 1 回だけ）
         try:
@@ -277,6 +340,10 @@ class PRSMNode(Node):
                 prsm_status=final_status,
                 prsm_outcome=outcome,
             )
+
+            # Clear stored trajectories after real execution
+            if not simulate_only:
+                self._pre_planned_trajectories.clear()
 
             response.accepted = True
             response.message = f"Task executed with outcome={outcome}"
