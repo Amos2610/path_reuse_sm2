@@ -69,6 +69,26 @@ class Put(XArmUtilsWrapper, State):
                 return os.path.dirname(os.path.dirname(first_path))
             return os.getcwd()
 
+    def _publish_display_trajectory(self, plan_jt) -> None:
+        """simulate_only 時に軌道をループパブリッシャーに渡す。"""
+        if not hasattr(self.pr_node, '_viz_traj_loop'):
+            return
+        from moveit_msgs.msg import DisplayTrajectory, RobotTrajectory
+        robot_traj = RobotTrajectory()
+        robot_traj.joint_trajectory = plan_jt
+        disp = DisplayTrajectory()
+        disp.model_id = "xarm6"
+        disp.trajectory.append(robot_traj)
+        interval = 5.0
+        if plan_jt.points:
+            last = plan_jt.points[-1].time_from_start
+            duration = last.sec + last.nanosec * 1e-9
+            interval = max(duration + 1.0, 3.0)
+        self.pr_node._viz_traj_loop.start(disp, interval)
+        self.pr_node.get_logger().info(
+            f"[Put] Trajectory loop started (interval={interval:.1f}s, {len(plan_jt.points)} points)."
+        )
+
     async def execute_trajectory_callback(self, goal_handle):
         self.pr_node.get_logger().info("Received ExecuteTrajectory goal.")
         try:
@@ -192,41 +212,62 @@ class Put(XArmUtilsWrapper, State):
         self.pr_node.get_logger().info(f"Put state executed.")
         self.pr_node.get_logger().info("------------------------------------------------")
         self._current_blackboard = blackboard
-        
+
+        self.phase = self.pr_node.get_parameter("put_phase").value
+
+        ##############################
+        ### Fast path: pre-planned ###
+        ##############################
+        simulate_only = self.pr_node.get_parameter("prsm_simulate_only").value
+        skill_key = f"{self.skill_name}_{self.step_index}"
+
+        if not simulate_only:
+            pre_plans = {}
+            try:
+                pre_plans = blackboard.get("pre_planned_trajectories") or {}
+            except Exception:
+                pre_plans = getattr(blackboard, "pre_planned_trajectories", {}) or {}
+            pre_plan = pre_plans.get(skill_key)
+            if pre_plan is not None:
+                self.pr_node.get_logger().info(f"[Put] Executing pre-planned trajectory for {skill_key}.")
+                exec_success = self.xarm.execute_with_plan(pre_plan)
+                if not exec_success:
+                    self.pr_node.get_logger().error("[Put] Pre-planned execution failed.")
+                    return "except"
+                if self._current_blackboard is not None:
+                    setattr(self._current_blackboard, 'put_trajectory', deepcopy(pre_plan))
+                self.xarm.gripper_open()
+                return "success"
+
+        ######################################
+        ### Normal path: resolve → plan → execute/simulate ###
+        ######################################
         # Blackboard に obj_joints がない場合は、自身の kwargs (RAG由来) から補完を試みる
         if blackboard and (not hasattr(blackboard, "obj_joints") or blackboard.obj_joints is None):
             joints_from_rag = self.kwargs.get("joints")
             if joints_from_rag:
                 self.pr_node.get_logger().info(f"[Put] Syncing obj_joints to BB from RAG args: {joints_from_rag}")
                 setattr(blackboard, "obj_joints", joints_from_rag)
-        
-        self.phase = self.pr_node.get_parameter("put_phase").value
-        # env = blackboard.get("env", {})
-        # pipeline = blackboard.get("pipeline", "stomp")
+
         start_joint_values, goal_joint_values = self.set_start_and_goal_joint_values(blackboard)
         if not goal_joint_values:
             self.pr_node.get_logger().error("Failed to set joint value target.")
             return "except"
-        
-        # use_pathseed = True  # TODO: blackboard等で切り替え可能に
+
         use_pathseed = self.pr_node.get_parameter("use_pathseed").value
         if use_pathseed:
             self.xarm.set_planning_pipeline("stomp")
-            # PathSeedからSTOMP用軌道をセット
             self.xarm.set_move_group_parameter("stomp.use_custom_trajectory", True)
             self.pr_node.get_logger().info(f"Put phase: {self.phase}")
-            # 1. RAG からの直接指定
             if self.path_seed_path:
                 pathseed_file = self.path_seed_path
             else:
-                # 2. path_reuse_method の selector で自動選択
                 pathseed_file = self.pr_client.select_best_path_seed(
                     environment_id="desk_scene_v1",
                     skill_name="place",
                     start_joints=start_joint_values,
                     goal_joints=goal_joint_values,
                 )
-                # 3. フォールバック: ROS パラメータ（Phase に応じる）
                 if not pathseed_file:
                     if self.phase == "Initial_Phase":
                         pathseed_file = self.pr_node.get_parameter("pathseed_put").value
@@ -237,7 +278,6 @@ class Put(XArmUtilsWrapper, State):
                         self.pr_node.get_logger().error(f"Unknown phase: {self.phase}")
                         return "except"
 
-            # 絶対パスに変換
             if not pathseed_file.startswith('/'):
                 pathseed_file = os.path.join(self._get_workspace_root(), pathseed_file)
             self.pr_node.get_logger().info(f"[Put] Using pathseed file: {pathseed_file}")
@@ -252,24 +292,27 @@ class Put(XArmUtilsWrapper, State):
         else:
             self.xarm.set_planning_pipeline("ompl")
 
-        ##############################
-        ### Planning and Execution ###
-        ##############################
         self.xarm.set_joint_value_target(goal_joint_values)
         success, plan, _, _ = self.xarm.plan()
         if success:
-            self.pr_node.get_logger().info("Plan found, executing...")
-            exec_success = self.xarm.execute()
-            if not exec_success:
-                self.pr_node.get_logger().error("Execution failed.")
-                return "except"
-            self.pr_node.get_logger().info("Execution succeeded.")
-            # Blackboardに軌道を保存
-            if self._current_blackboard is not None:
-                setattr(self._current_blackboard, 'put_trajectory', deepcopy(plan))
-                self.pr_node.get_logger().info(f"[Put] stored put_trajectory to BB (points={len(plan.points)})")
+            if simulate_only:
+                self.pr_node.get_logger().info(f"[Put] Storing pre-planned trajectory for {skill_key}.")
+                self._publish_display_trajectory(plan)
+                self.pr_node._pre_planned_trajectories[skill_key] = plan
+                if self._current_blackboard is not None:
+                    setattr(self._current_blackboard, 'put_trajectory', deepcopy(plan))
+                return "success"
+            else:
+                self.pr_node.get_logger().info("Plan found, executing...")
+                exec_success = self.xarm.execute()
+                if not exec_success:
+                    self.pr_node.get_logger().error("Execution failed.")
+                    return "except"
+                self.pr_node.get_logger().info("Execution succeeded.")
+                if self._current_blackboard is not None:
+                    setattr(self._current_blackboard, 'put_trajectory', deepcopy(plan))
                 self.xarm.gripper_open()
-            return "success"
+                return "success"
         else:
             self.pr_node.get_logger().warn("No valid plan found, retrying...")
             return "loop"

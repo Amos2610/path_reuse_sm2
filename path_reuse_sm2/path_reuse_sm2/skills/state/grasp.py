@@ -35,6 +35,7 @@ class Grasp(XArmUtilsWrapper, State):
         # Grasp は (workpiece の場所, workpiece_id) の組み合わせで管理
         self.target_id = kwargs.get("workpiece") or kwargs.get("target_location") or ""
         self.skill_name = kwargs.get("skill_name", "SkillGraspObj")
+        self.step_index = kwargs.get("step_index", 0)
         
         ws_root = self._get_workspace_root()
         registry_path = self.pr_node.get_parameter("pathseed_registry_path").value
@@ -222,6 +223,26 @@ class Grasp(XArmUtilsWrapper, State):
 
         return start_joint_values, goal_joint_values
 
+    def _publish_display_trajectory(self, plan_jt) -> None:
+        """simulate_only 時に軌道をループパブリッシャーに渡す。"""
+        if not hasattr(self.pr_node, '_viz_traj_loop'):
+            return
+        from moveit_msgs.msg import DisplayTrajectory, RobotTrajectory
+        robot_traj = RobotTrajectory()
+        robot_traj.joint_trajectory = plan_jt
+        disp = DisplayTrajectory()
+        disp.model_id = "xarm6"
+        disp.trajectory.append(robot_traj)
+        interval = 5.0
+        if plan_jt.points:
+            last = plan_jt.points[-1].time_from_start
+            duration = last.sec + last.nanosec * 1e-9
+            interval = max(duration + 1.0, 3.0)
+        self.pr_node._viz_traj_loop.start(disp, interval)
+        self.pr_node.get_logger().info(
+            f"[Grasp] Trajectory loop started (interval={interval:.1f}s, {len(plan_jt.points)} points)."
+        )
+
     def execute(self, blackboard=None):
         self.pr_node.get_logger().info("------------------------------------------------")
         self.pr_node.get_logger().info(f"Grasp state executed.")
@@ -255,9 +276,34 @@ class Grasp(XArmUtilsWrapper, State):
             
         self.phase = self.pr_node.get_parameter("grasp_phase").value
         self.pr_node.get_logger().info(f"Current phase: {self.phase}")
-        # env = blackboard.get("env", {})
-        # pipeline = blackboard.get("pipeline", "stomp")
 
+        ##############################
+        ### Fast path: pre-planned ###
+        ##############################
+        simulate_only = self.pr_node.get_parameter("prsm_simulate_only").value
+        skill_key = f"{self.skill_name}_{self.step_index}"
+
+        if not simulate_only:
+            pre_plans = {}
+            try:
+                pre_plans = blackboard.get("pre_planned_trajectories") or {}
+            except Exception:
+                pre_plans = getattr(blackboard, "pre_planned_trajectories", {}) or {}
+            pre_plan = pre_plans.get(skill_key)
+            if pre_plan is not None:
+                self.pr_node.get_logger().info(f"[Grasp] Executing pre-planned trajectory for {skill_key}.")
+                exec_success = self.xarm.execute_with_plan(pre_plan)
+                if not exec_success:
+                    self.pr_node.get_logger().error("[Grasp] Pre-planned execution failed.")
+                    return "except"
+                if self._current_blackboard is not None:
+                    setattr(self._current_blackboard, 'grasp_trajectory', deepcopy(pre_plan))
+                self.xarm.gripper_close()
+                return "success"
+
+        ######################################
+        ### Normal path: resolve → plan → execute/simulate ###
+        ######################################
         joint_values = self.set_start_and_goal_joint_values(blackboard)
         if joint_values is None:
             self.pr_node.get_logger().error("Failed to set start/goal joint values.")
@@ -267,27 +313,22 @@ class Grasp(XArmUtilsWrapper, State):
         if not goal_joint_values:
             self.pr_node.get_logger().error("Failed to set joint value target.")
             return "except"
-        
-        # use_pathseed = True  # TODO: blackboard等で切り替え可能に
+
         use_pathseed = self.pr_node.get_parameter("use_pathseed").value
         self.pr_node.get_logger().info(f"use_pathseed: {use_pathseed}")
         if use_pathseed:
             self.xarm.set_planning_pipeline("stomp")
-            # PathSeedからSTOMP用軌道をセット
             self.xarm.set_move_group_parameter("stomp.use_custom_trajectory", True)
             self.pr_node.get_logger().info(f"Grasp phase: {self.phase}")
-            # 1. RAG からの直接指定
             if self.path_seed_path:
                 pathseed_file = self.path_seed_path
             else:
-                # 2. path_reuse_method の selector で自動選択
                 pathseed_file = self.pr_client.select_best_path_seed(
                     environment_id="desk_scene_v1",
                     skill_name="pick",
                     start_joints=start_joint_values,
                     goal_joints=goal_joint_values,
                 )
-                # 3. フォールバック: ROS パラメータ（Phase に応じる）
                 if not pathseed_file:
                     if self.phase == "Initial_Phase":
                         pathseed_file = self.pr_node.get_parameter("pathseed_grasp").value
@@ -297,8 +338,7 @@ class Grasp(XArmUtilsWrapper, State):
                     else:
                         self.pr_node.get_logger().error(f"Unknown phase: {self.phase}")
                         return "except"
-                
-            # 絶対パスに変換
+
             pathseed_file = self._resolve_pathseed_file(pathseed_file)
             self.pr_node.get_logger().info(f"[Grasp] Using pathseed file: {pathseed_file}")
             success_generated = self.generate_stomp_path_from_pathseed(
@@ -311,25 +351,28 @@ class Grasp(XArmUtilsWrapper, State):
                 return "except"
         else:
             self.xarm.set_planning_pipeline("ompl")
-        
-        ##############################
-        ### Planning and Execution ###
-        ##############################
+
         self.xarm.set_joint_value_target(goal_joint_values)
         success, plan, _, _ = self.xarm.plan()
         if success:
-            self.pr_node.get_logger().info("Plan found, executing...")
-            exec_success = self.xarm.execute()
-            if not exec_success:
-                self.pr_node.get_logger().error("Execution failed.")
-                return "except"
-            self.pr_node.get_logger().info("Execution succeeded.")
-            # Blackboardに軌道を保存
-            if self._current_blackboard is not None:
-                setattr(self._current_blackboard, 'grasp_trajectory', deepcopy(plan))
-                self.pr_node.get_logger().info(f"[Grasp] stored grasp_trajectory to BB (points={len(plan.points)})")
-            self.xarm.gripper_close()
-            return "success"
+            if simulate_only:
+                self.pr_node.get_logger().info(f"[Grasp] Storing pre-planned trajectory for {skill_key}.")
+                self._publish_display_trajectory(plan)
+                self.pr_node._pre_planned_trajectories[skill_key] = plan
+                if self._current_blackboard is not None:
+                    setattr(self._current_blackboard, 'grasp_trajectory', deepcopy(plan))
+                return "success"
+            else:
+                self.pr_node.get_logger().info("Plan found, executing...")
+                exec_success = self.xarm.execute()
+                if not exec_success:
+                    self.pr_node.get_logger().error("Execution failed.")
+                    return "except"
+                self.pr_node.get_logger().info("Execution succeeded.")
+                if self._current_blackboard is not None:
+                    setattr(self._current_blackboard, 'grasp_trajectory', deepcopy(plan))
+                self.xarm.gripper_close()
+                return "success"
         else:
             self.pr_node.get_logger().warn("No valid plan found, retrying...")
             return "loop"
