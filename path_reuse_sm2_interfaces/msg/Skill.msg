@@ -9,4 +9,5 @@ string workpiece
 # Motion
 float64[] joints
 float64[] pose
+string pose_frame_id
 string path_seed_path
