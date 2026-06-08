@@ -18,27 +18,39 @@ class Move(State):
 
     def execute(self, blackboard=None, **_) -> str:
         self.pr_node.get_logger().info("Move state executed.")
-        self.xarm.set_planning_pipeline("ompl")
+        try:
+            self.xarm.set_planning_pipeline("ompl")
+        except Exception as e:
+            self.pr_node.get_logger().error(f"[Move] Failed to set planning pipeline: {e}")
+            return "except"
+
         move_joints = []
-        # jointsの値がある場合は優先して使用する
         if self.joints:
             self.pr_node.get_logger().info(f"Moving to target joints from RAG: {self.joints}")
             move_joints = self.joints
-        # jointsの値は空でposeの値がある場合はposeをIK変換して使用する
-        elif not self.joints and self.pose:
+        elif self.pose:
             self.pr_node.get_logger().info(f"Moving to target pose from RAG: {self.pose}")
             # TODO: IK計算して関節角度に変換する処理を実装する
-            # move_joints = self.convert_pose_to_joints(self.pose)
         else:
             self.pr_node.get_logger().error("No valid joints or pose provided. Please define them in semantic_kb.")
             return "except"
 
-        self.xarm.set_joint_value_target(move_joints)
-        self.pr_node.get_logger().info("Moved to obj_joints for debug.")
-        success, plan, _, _ = self.xarm.plan()
+        try:
+            self.xarm.set_joint_value_target(move_joints)
+            self.pr_node.get_logger().info("Moved to obj_joints for debug.")
+            result = self.xarm.plan()
+            success = result[0] if isinstance(result, (list, tuple)) and len(result) >= 1 else False
+        except Exception as e:
+            self.pr_node.get_logger().error(f"[Move] Motion planning failed (is move_group running?): {e}")
+            return "except"
+
         if success:
             self.pr_node.get_logger().info("Planning to obj_joints succeeded.")
-            exec_success = self.xarm.execute()
+            try:
+                exec_success = self.xarm.execute()
+            except Exception as e:
+                self.pr_node.get_logger().error(f"[Move] Execution failed: {e}")
+                return "loop"
             if exec_success:
                 self.pr_node.get_logger().info("Execution to obj_joints succeeded.")
                 setattr(blackboard, "move_joints", move_joints)
@@ -49,4 +61,3 @@ class Move(State):
         else:
             self.pr_node.get_logger().error("Planning to obj_joints failed.")
             return "loop"
-        return "except"

@@ -173,7 +173,17 @@ class PRSMNode(Node):
     # TaskSet サービスコールバック
     # -------------------------
     def _task_set_callback(self, request: TaskSet.Request, response: TaskSet.Response):
+        self.get_logger().info(f"[PRSM] Raw skills received: {len(request.task.skills)} items")
+        for i, s in enumerate(request.task.skills):
+            self.get_logger().info(
+                f"[PRSM] skills[{i}]: skill_name={repr(s.skill_name)} "
+                f"source_location={repr(s.source_location)} "
+                f"target_location={repr(s.target_location)} "
+                f"workpiece={repr(s.workpiece)} "
+                f"path_seed_path={repr(s.path_seed_path)}"
+            )
         available = set(names())
+        self.get_logger().info(f"[PRSM] Available skills: {sorted(available)}")
         requested = [s.skill_name for s in request.task.skills]
         unknown = [n for n in requested if n not in available]
         if unknown:
