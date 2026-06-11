@@ -272,8 +272,18 @@ class Put(XArmUtilsWrapper, State):
         if not simulate_only:
             pre_plans = {}
             try:
-                pre_plans = blackboard.get("pre_planned_trajectories") or {}
-            except Exception:
+                # Blackboard の複数のアクセス方法を試す
+                pre_plans = blackboard.get("pre_planned_trajectories")
+                if pre_plans is None:
+                    pre_plans = {}
+            except KeyError:
+                # キーが存在しない場合
+                self.pr_node.get_logger().warn(
+                    "[Put] 'pre_planned_trajectories' not in blackboard. This is expected in first execution."
+                )
+                pre_plans = {}
+            except Exception as e:
+                self.pr_node.get_logger().warn(f"[Put] Blackboard access failed: {e}. Continuing with empty dict.")
                 pre_plans = getattr(blackboard, "pre_planned_trajectories", {}) or {}
 
             pre_plan = pre_plans.get(skill_key)

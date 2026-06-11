@@ -148,6 +148,9 @@ class PRSMNode(Node):
         # Pre-planned trajectories stored during simulate_only mode
         # key: "{skill_name}_{step_index}", value: JointTrajectory
         self._pre_planned_trajectories: dict = {}
+        
+        # Global blackboard singleton (reused across TaskSet service calls)
+        self._global_blackboard = Blackboard()
 
         self.get_logger().info("[PRSM] Node initialized. Waiting for /prsm_task_set service calls...")
 
@@ -312,15 +315,22 @@ class PRSMNode(Node):
         self.get_logger().info("[PRSM] State machine built.")
 
         # 3) Blackboard に Skill[] と事前計画軌道を詰める
-        bb = Blackboard()
+        bb = self._global_blackboard  # シングルトン blackboard を使用
         bb["skills"] = list(skills)
-        if not simulate_only and self._pre_planned_trajectories:
-            bb["pre_planned_trajectories"] = self._pre_planned_trajectories.copy()
-            self.get_logger().info(
-                f"[PRSM] Passing {len(self._pre_planned_trajectories)} pre-planned trajectories to execution."
-            )
+        
+        if not simulate_only:
+            # 実行フェーズ: 事前計画軌道を設定（常に初期化）
+            if self._pre_planned_trajectories:
+                bb["pre_planned_trajectories"] = self._pre_planned_trajectories.copy()
+                self.get_logger().info(
+                    f"[PRSM] Passing {len(self._pre_planned_trajectories)} pre-planned trajectories to execution."
+                )
+            else:
+                # 軌道なしの場合も明示的に設定（キー不在エラー防止）
+                bb["pre_planned_trajectories"] = {}
+                self.get_logger().warn("[PRSM] No pre-planned trajectories available. Using empty dict.")
         else:
-            # シミュレーション開始 or 保存済み軌道なし: クリアして新規計画
+            # シミュレーション開始: クリアして新規計画
             self._pre_planned_trajectories.clear()
 
         # 4) 実行（このサービス呼び出しの中で 1 回だけ）
