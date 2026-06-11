@@ -21,13 +21,17 @@ class Put(XArmUtilsWrapper, State):
         self.pr_client = None
         self._current_blackboard = None
 
-        # ActionServerの初期化
-        self._action_server = ActionServer(
-            self.pr_node,
-            ExecuteTrajectory,
-            '/prsm/put/execute_trajectory',
-            self.execute_trajectory_callback
-        )
+        # ActionServerの初期化（重複生成防止: prsm_node に一度だけ登録）
+        if not hasattr(self.pr_node, '_put_action_server') or self.pr_node._put_action_server is None:
+            self._action_server = ActionServer(
+                self.pr_node,
+                ExecuteTrajectory,
+                '/prsm/put/execute_trajectory',
+                self.execute_trajectory_callback
+            )
+            self.pr_node._put_action_server = self._action_server
+        else:
+            self._action_server = self.pr_node._put_action_server
         self._last_executed_traj_msg: Optional[JointTrajectory] = None
         self.target_location = kwargs.get("target_location", "")
         self.joints = kwargs.get("joints", [])
@@ -88,7 +92,7 @@ class Put(XArmUtilsWrapper, State):
         robot_traj = RobotTrajectory()
         robot_traj.joint_trajectory = plan_jt
         disp = DisplayTrajectory()
-        disp.model_id = "xarm6"
+        disp.model_id = "UF_ROBOT"
         disp.trajectory.append(robot_traj)
         interval = 5.0
         if plan_jt.points:
@@ -270,12 +274,7 @@ class Put(XArmUtilsWrapper, State):
         skill_key = f"{self.skill_name}_{self.step_index}"
 
         if not simulate_only:
-            pre_plans = {}
-            try:
-                pre_plans = blackboard.get("pre_planned_trajectories") or {}
-            except Exception:
-                pre_plans = getattr(blackboard, "pre_planned_trajectories", {}) or {}
-
+            pre_plans = blackboard["pre_planned_trajectories"] if "pre_planned_trajectories" in blackboard else {}
             pre_plan = pre_plans.get(skill_key)
             if pre_plan is not None:
                 self.pr_node.get_logger().info(f"[Put] Executing pre-planned trajectory for {skill_key}.")
@@ -311,8 +310,14 @@ class Put(XArmUtilsWrapper, State):
         use_pathseed = self.pr_node.get_parameter("use_pathseed").value
         if use_pathseed:
             pr_client = self._ensure_path_seed_client()
-            self.xarm.set_planning_pipeline("stomp")
-            self.xarm.set_move_group_parameter("stomp.use_custom_trajectory", True)
+            try:
+                self.xarm.set_planning_pipeline("stomp")
+            except Exception as e:
+                self.pr_node.get_logger().warn(f"[Put] set_planning_pipeline failed but continue: {e}")
+            try:
+                self.xarm.set_move_group_parameter("stomp.use_custom_trajectory", True)
+            except Exception as e:
+                self.pr_node.get_logger().warn(f"[Put] set_move_group_parameter failed but continue: {e}")
             self.pr_node.get_logger().info(f"Put phase: {self.phase}")
 
             if self.path_seed_path:
@@ -346,7 +351,10 @@ class Put(XArmUtilsWrapper, State):
                 self.pr_node.get_logger().error("Failed to generate STOMP path from PathSeed.")
                 return "except"
         else:
-            self.xarm.set_planning_pipeline("ompl")
+            try:
+                self.xarm.set_planning_pipeline("ompl")
+            except Exception as e:
+                self.pr_node.get_logger().warn(f"[Put] set_planning_pipeline(ompl) failed but continue: {e}")
 
         self.xarm.set_joint_value_target(goal_joint_values)
         success, plan, _, _ = self.xarm.plan()

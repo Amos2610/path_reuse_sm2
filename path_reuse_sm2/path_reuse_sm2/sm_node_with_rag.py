@@ -320,7 +320,8 @@ class PRSMNode(Node):
                 f"[PRSM] Passing {len(self._pre_planned_trajectories)} pre-planned trajectories to execution."
             )
         else:
-            # シミュレーション開始 or 保存済み軌道なし: クリアして新規計画
+            # シミュレーション開始 or 保存済み軌道なし: 空辞書で初期化して新規計画
+            bb["pre_planned_trajectories"] = {}
             self._pre_planned_trajectories.clear()
 
         # 4) 実行（このサービス呼び出しの中で 1 回だけ）

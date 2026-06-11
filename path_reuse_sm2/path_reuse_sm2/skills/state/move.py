@@ -27,7 +27,7 @@ class Move(State):
         robot_traj = RobotTrajectory()
         robot_traj.joint_trajectory = plan_jt
         disp = DisplayTrajectory()
-        disp.model_id = "xarm6"
+        disp.model_id = "UF_ROBOT"
         disp.trajectory.append(robot_traj)
         interval = 5.0
         if plan_jt.points:
@@ -49,11 +49,7 @@ class Move(State):
         ### Fast path: pre-planned ###
         ##############################
         if not simulate_only:
-            pre_plans = {}
-            try:
-                pre_plans = blackboard.get("pre_planned_trajectories") or {}
-            except Exception:
-                pre_plans = getattr(blackboard, "pre_planned_trajectories", {}) or {}
+            pre_plans = blackboard["pre_planned_trajectories"] if "pre_planned_trajectories" in blackboard else {}
             pre_plan = pre_plans.get(skill_key)
             if pre_plan is not None:
                 self.pr_node.get_logger().info(f"[Move] Executing pre-planned trajectory for {skill_key}.")

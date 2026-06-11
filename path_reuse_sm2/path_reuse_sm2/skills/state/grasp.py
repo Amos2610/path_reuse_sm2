@@ -18,7 +18,7 @@ class Grasp(XArmUtilsWrapper, State):
         State.__init__(self, outcomes=["success", "loop", "except"])
         XArmUtilsWrapper.__init__(self)
         self.pr_node = node
-        self.pr_client = PathSeedClient()
+        self.pr_client = None  # lazy init via _ensure_path_seed_client()
         self.phase = kwargs.get("phase", "")
         self.workpiece = kwargs.get("workpiece", "")
         self.path_seed_path = kwargs.get("path_seed_path", "")
@@ -78,6 +78,12 @@ class Grasp(XArmUtilsWrapper, State):
         self.max_velocity_scale_default = 0.3
         self.max_accel_scale_default = 0.3
         self.planning_time_default = 2.0
+
+    def _ensure_path_seed_client(self) -> PathSeedClient:
+        if self.pr_client is None:
+            self.pr_node.get_logger().info("[Grasp] Creating PathSeedClient.")
+            self.pr_client = PathSeedClient()
+        return self.pr_client
 
     def _get_workspace_root(self) -> str:
         import os
@@ -205,12 +211,13 @@ class Grasp(XArmUtilsWrapper, State):
         """
         try:
             self.pr_node.get_logger().info("[Grasp] Decoding pathseed via PathSeedClient...")
-            decoded_path = self.pr_client.send_decode_path_seed(file_path, start_joint_values, goal_joint_values)
+            pr_client = self._ensure_path_seed_client()
+            decoded_path = pr_client.send_decode_path_seed(file_path, start_joint_values, goal_joint_values)
             if decoded_path is None:
                 self.pr_node.get_logger().error("[Grasp] decode failed: None returned.")
                 return False
             self.pr_node.get_logger().info("[Grasp] Setting decoded pathseed...")
-            self.pr_client.send_set_path_seed(decoded_path)
+            pr_client.send_set_path_seed(decoded_path)
 
             # デバッグ用に残したい場合はBBへ保存する運用に
             # bb.pathseed_decoded = decoded_path
@@ -291,7 +298,7 @@ class Grasp(XArmUtilsWrapper, State):
         robot_traj = RobotTrajectory()
         robot_traj.joint_trajectory = plan_jt
         disp = DisplayTrajectory()
-        disp.model_id = "xarm6"
+        disp.model_id = "UF_ROBOT"
         disp.trajectory.append(robot_traj)
         interval = 5.0
         if plan_jt.points:
@@ -414,11 +421,7 @@ class Grasp(XArmUtilsWrapper, State):
         skill_key = f"{self.skill_name}_{self.step_index}"
 
         if not simulate_only:
-            pre_plans = {}
-            try:
-                pre_plans = blackboard.get("pre_planned_trajectories") or {}
-            except Exception:
-                pre_plans = getattr(blackboard, "pre_planned_trajectories", {}) or {}
+            pre_plans = blackboard["pre_planned_trajectories"] if "pre_planned_trajectories" in blackboard else {}
             pre_plan = pre_plans.get(skill_key)
             if pre_plan is not None:
                 self.pr_node.get_logger().info(f"[Grasp] Executing pre-planned trajectory for {skill_key}.")
@@ -518,7 +521,7 @@ class Grasp(XArmUtilsWrapper, State):
             if self.path_seed_path:
                 pathseed_file = self.path_seed_path
             else:
-                pathseed_file = self.pr_client.select_best_path_seed(
+                pathseed_file = self._ensure_path_seed_client().select_best_path_seed(
                     environment_id="desk_scene_v1",
                     skill_name="pick",
                     start_joints=start_joint_values,
