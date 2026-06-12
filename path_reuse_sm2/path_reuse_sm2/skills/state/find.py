@@ -90,9 +90,6 @@ class FindObj(State):
     def _camera_info_callback(self, msg: CameraInfo) -> None:
         self.info_msg = msg
         self.camera_frame_id = msg.header.frame_id
-        self.pr_node.get_logger().info(
-            f"[FindObj][frame] camera_info callback frame_id={repr(msg.header.frame_id)}"
-        )
         if self.camera_model is not None:
             try:
                 self.camera_model.fromCameraInfo(msg)
@@ -191,7 +188,21 @@ class FindObj(State):
             self.pr_node.get_logger().info(
                 "[FindObj] Recognition result from RAG/KB. Skipping detection."
             )
+            if hasattr(self, 'image_sub') and self.image_sub is not None:
+                self.pr_node.destroy_subscription(self.image_sub)
+                self.image_sub = None
+            if hasattr(self, 'info_sub') and self.info_sub is not None:
+                self.pr_node.destroy_subscription(self.info_sub)
+                self.info_sub = None
             return "success"
+
+        # --- cleanup subscriptions to avoid leak ---
+        if hasattr(self, 'image_sub') and self.image_sub is not None:
+            self.pr_node.destroy_subscription(self.image_sub)
+            self.image_sub = None
+        if hasattr(self, 'info_sub') and self.info_sub is not None:
+            self.pr_node.destroy_subscription(self.info_sub)
+            self.info_sub = None
 
         # TODO: GroundedSAM2 による検出を実装する
         #
