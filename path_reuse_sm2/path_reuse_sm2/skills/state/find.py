@@ -43,8 +43,8 @@ class FindObj(State):
 
         # --- カメラ関連（将来の検出実装用） ---
         qos = qos_profile_sensor_data
-        self.image_topic = kwargs.get("image_topic", "/camera/camera/color/image_raw")
-        self.camera_info_topic = kwargs.get("camera_info_topic", "/camera/camera/color/camera_info")
+        self.image_topic = kwargs.get("image_topic", "/camera/hand_camera/color/image_raw")
+        self.camera_info_topic = kwargs.get("camera_info_topic", "/camera/hand_camera/color/camera_info")
         self.camera_info_wait_timeout = float(kwargs.get("camera_info_wait_timeout", 2.0))
         self.camera_info_wait_poll_sec = float(kwargs.get("camera_info_wait_poll_sec", 0.05))
 
