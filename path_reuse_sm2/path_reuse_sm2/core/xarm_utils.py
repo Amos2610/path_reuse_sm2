@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import rclpy
+import threading
 from rclpy.time import Time as RclpyTime
 from builtin_interfaces.msg import Duration as DurationMsg
 from rclpy.duration import Duration as RclpyDuration
@@ -62,6 +63,27 @@ class XArmRobotUtils:
         self._ik_cli = None
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self.node)
+
+    def _wait_for_service_future(self, future, timeout_sec: float, label: str):
+        done = threading.Event()
+
+        def _mark_done(_future):
+            done.set()
+
+        future.add_done_callback(_mark_done)
+        if not done.wait(timeout_sec):
+            self.node.get_logger().error(
+                f"[XArmRobotUtils] {label} timed out after {timeout_sec:.1f}s"
+            )
+            return None
+
+        try:
+            return future.result()
+        except Exception as exc:
+            self.node.get_logger().error(
+                f"[XArmRobotUtils] {label} future raised {type(exc).__name__}: {exc}"
+            )
+            return None
 
     def _is_sequence(self, value):
         if isinstance(value, (str, bytes, dict)):
@@ -156,7 +178,7 @@ class XArmRobotUtils:
             transformed = self._tf_buffer.transform(
                 pose_stamped,
                 self.base_frame,
-                timeout=RclpyDuration(seconds=0.5),
+                timeout=RclpyDuration(seconds=5.0),
             )
             tp = transformed.pose.position
             self.node.get_logger().info(
@@ -190,7 +212,7 @@ class XArmRobotUtils:
         req.ik_request.group_name = self.move_group
         req.ik_request.ik_link_name = self.ee_link
         req.ik_request.pose_stamped = target
-        req.ik_request.timeout = DurationMsg(sec=1, nanosec=0)
+        req.ik_request.timeout = DurationMsg(sec=3, nanosec=0)
         req.ik_request.avoid_collisions = False
 
         # seed_joints をセットすると姿勢の初期ジョイントがセットできる
@@ -202,9 +224,19 @@ class XArmRobotUtils:
             rs.joint_state = js
             req.ik_request.robot_state = rs
 
+        self.node.get_logger().info(
+            "[XArmRobotUtils] Sending IK request: "
+            f"service={self.ik_service}, group={self.move_group}, "
+            f"ee_link={self.ee_link}, seed_joints={'yes' if seed_joints is not None else 'no'}"
+        )
         future = self._ik_cli.call_async(req)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=2.0)
-        res = future.result()
+        # PRSMNode is already attached to MultiThreadedExecutor in sm_node_with_rag.py.
+        # Calling rclpy.spin_until_future_complete(self.node, ...) here can touch the
+        # same wait set from inside a running callback and has caused
+        # "cannot use Destroyable" followed by "IndexError: wait set index too big".
+        # Wait on the future callback instead; another executor thread receives the
+        # service response while this skill callback is blocked.
+        res = self._wait_for_service_future(future, timeout_sec=5.0, label="IK service call")
 
         if res is None:
             self.node.get_logger().error("[XArmRobotUtils] IK service call failed")
@@ -287,4 +319,3 @@ class XArmRobotUtils:
                     return joints
 
         return None
-

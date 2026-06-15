@@ -171,6 +171,8 @@ class PRSMNode(Node):
         self.declare_parameter("grasp_phase", "Initial_Phase")
         self.declare_parameter("put_phase", "Initial_Phase")
         self.declare_parameter("pathseed_registry_path", "")
+        # grasp_free_yaw: True=検出したオブジェクトのヨー角をグラスプ姿勢に引き継ぐ
+        self.declare_parameter("grasp_free_yaw", False)
 
         # simulate_only: True=計画のみ(RViz表示+保存), False=実行
         self.declare_parameter("prsm_simulate_only", False)
@@ -461,7 +463,7 @@ def main():
     rclpy.init()
     node = PRSMNode()
     try:
-        exec = MultiThreadedExecutor(num_threads=2)
+        exec = MultiThreadedExecutor(num_threads=8)
         exec.add_node(node)
         exec.spin()
     finally:

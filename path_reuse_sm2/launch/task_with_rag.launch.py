@@ -1,3 +1,4 @@
+import math
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
@@ -23,6 +24,27 @@ def generate_launch_description():
     )
 
     params_file = LaunchConfiguration('params_file')
+
+    # hand_camera_link は RealSense ドライバが内部フレームを配信するが、
+    # link_eef → hand_camera_link のマウント変換はドライバが配信しない。
+    # URDF (realsense_d435i.urdf.xacro) の hand_camera_link_joint 定義に従い静的TFを補完する。
+    # simulate_only モードで TF ツリーが分断されるのを防ぐ。
+    hand_camera_tf = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        name='hand_camera_link_tf',
+        output='screen',
+        arguments=[
+            '--x', '0.06746',
+            '--y', '-0.0175',
+            '--z', '0.0237',
+            '--roll', str(math.pi),
+            '--pitch', str(-math.pi / 2),
+            '--yaw', '0',
+            '--frame-id', 'link_eef',
+            '--child-frame-id', 'hand_camera_link',
+        ],
+    )
 
     prsm = Node(
         package='path_reuse_sm2',
@@ -50,6 +72,7 @@ def generate_launch_description():
     return LaunchDescription([
         declare_params,
         declare_use_viewer,
+        hand_camera_tf,
         viewer,
         prsm,
     ])
