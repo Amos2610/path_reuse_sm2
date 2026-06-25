@@ -67,13 +67,23 @@ class Move(State):
             pre_plan = pre_plans.get(skill_key)
             if pre_plan is not None:
                 self.pr_node.get_logger().info(f"[Move] Executing pre-planned trajectory for {skill_key}.")
-                exec_success = self.xarm.execute_with_plan(pre_plan)
-                if not exec_success:
+                try:
+                    exec_success = self.xarm.execute_with_plan(pre_plan)
+                except AttributeError:
+                    self.pr_node.get_logger().warn(
+                        "[Move] execute_with_plan not available in xarm_utils. "
+                        "Falling through to re-plan. (Rebuild xarm_utils_cpp to enable fast path.)"
+                    )
+                    exec_success = None  # sentinel: fall through to Normal Path
+                if exec_success is None:
+                    pass  # fall through to Normal Path below
+                elif not exec_success:
                     self.pr_node.get_logger().error("[Move] Pre-planned execution failed.")
                     return "except"
-                if blackboard is not None:
-                    setattr(blackboard, "move_joints", list(pre_plan.points[-1].positions) if pre_plan.points else [])
-                return "success"
+                else:
+                    if blackboard is not None:
+                        setattr(blackboard, "move_joints", list(pre_plan.points[-1].positions) if pre_plan.points else [])
+                    return "success"
 
         ######################################
         ### Normal path: plan → simulate/execute ###

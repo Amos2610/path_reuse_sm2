@@ -11,6 +11,7 @@ TaskSet サービスで受け取った Skill[] から flow と StateMachine を�
 """
 
 import threading
+import time
 from typing import Any, Dict, List
 
 import rclpy
@@ -187,6 +188,61 @@ class PRSMNode(Node):
         self.declare_parameter("prsm_outcome", "")                   # 最終結果: succeed / abort / cancel
         self.declare_parameter("prsm_error_message", "")             # エラー詳細
 
+
+    def _reset_xarm_state(self) -> None:
+        """xArm reset: clean error, enable motion, set mode 0, set state 0."""
+        try:
+            from xarm_msgs.srv import Call, SetInt16, SetInt16ById
+        except ImportError:
+            self.get_logger().warn("[PRSM] xarm_msgs not available, skipping xArm reset")
+            return
+
+        def _call_srv(client, request, label, timeout=3.0):
+            if not client.wait_for_service(timeout_sec=timeout):
+                self.get_logger().warn("[PRSM] xArm reset: " + label + " service not available")
+                return None
+            future = client.call_async(request)
+            ev = threading.Event()
+            future.add_done_callback(lambda _: ev.set())
+            if not ev.wait(timeout):
+                self.get_logger().warn("[PRSM] xArm reset: " + label + " timeout")
+                return None
+            return future.result()
+
+        if not hasattr(self, '_xarm_clean_error_cli'):
+            self._xarm_clean_error_cli = self.create_client(Call, '/xarm/clean_error')
+        res = _call_srv(self._xarm_clean_error_cli, Call.Request(), 'clean_error')
+        if res is not None:
+            self.get_logger().info("[PRSM] xArm clean_error: ret=" + str(res.ret))
+
+        if not hasattr(self, '_xarm_motion_enable_cli'):
+            self._xarm_motion_enable_cli = self.create_client(SetInt16ById, '/xarm/motion_enable')
+        req = SetInt16ById.Request()
+        req.id = 8
+        req.data = 1
+        res = _call_srv(self._xarm_motion_enable_cli, req, 'motion_enable')
+        if res is not None:
+            self.get_logger().info("[PRSM] xArm motion_enable(8,1): ret=" + str(res.ret))
+
+        if not hasattr(self, '_xarm_set_mode_cli'):
+            self._xarm_set_mode_cli = self.create_client(SetInt16, '/xarm/set_mode')
+        req = SetInt16.Request()
+        req.data = 0
+        res = _call_srv(self._xarm_set_mode_cli, req, 'set_mode(0)')
+        if res is not None:
+            self.get_logger().info("[PRSM] xArm set_mode(0): ret=" + str(res.ret))
+
+        if not hasattr(self, '_xarm_set_state_cli'):
+            self._xarm_set_state_cli = self.create_client(SetInt16, '/xarm/set_state')
+        req = SetInt16.Request()
+        req.data = 0
+        res = _call_srv(self._xarm_set_state_cli, req, 'set_state(0)')
+        if res is not None:
+            self.get_logger().info("[PRSM] xArm set_state(0): ret=" + str(res.ret))
+
+        time.sleep(0.5)
+        self.get_logger().info("[PRSM] xArm state reset complete.")
+
     def _update_monitoring_params(self, **kwargs) -> None:
         """監視用パラメータを一括更新し、同時にTopicでも配信する。"""
         # --- 1) パラメータ更新 (後方互換性のため残す) ---
@@ -334,6 +390,8 @@ class PRSMNode(Node):
             self._pre_planned_trajectories.clear()
 
         # 4) 実行（このサービス呼び出しの中で 1 回だけ）
+        if not simulate_only:
+            self._reset_xarm_state()
         try:
             outcome = self.sm(bb)
             self.get_logger().info(f"[PRSM] outcome: {outcome}")

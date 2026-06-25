@@ -11,7 +11,7 @@ from path_reuse_sm2.core.plugin import skill
 from path_reuse_sm2.skills.state.move import Move
 
 
-@skill("SkillMove")
+@skill(names=["SkillMove", "SkillMoveHome"])
 class SkillMove(State):
     def __init__(self, node, **kwargs):
         super().__init__(outcomes=[SUCCEED, ABORT, CANCEL])

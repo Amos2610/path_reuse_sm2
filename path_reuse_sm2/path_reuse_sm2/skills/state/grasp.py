@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 import os
 import time
+import math
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple, Union
 from yasmin.state import State
@@ -380,6 +381,14 @@ class Grasp(XArmUtilsWrapper, State):
                 and not self.robot_utils.is_joint_list(self.obj_joints)):
             grasp_pose_base_tmp = self.robot_utils.transform_to_base(self.grasp_pose)
             if grasp_pose_base_tmp is not None:
+                _px = grasp_pose_base_tmp.pose.position.x
+                _py = grasp_pose_base_tmp.pose.position.y
+                _horiz = math.sqrt(_px ** 2 + _py ** 2)
+                if _horiz > 0.70:
+                    self.pr_node.get_logger().warn(
+                        f"[Grasp] Horizontal reach {_horiz:.3f}m may exceed xArm6 max workspace (~0.695m). "
+                        f"Target: x={_px:.3f}, y={_py:.3f}. IK will likely fail."
+                    )
                 q = self.grasp_orientation
                 grasp_pose_base_tmp.pose.orientation.x = float(q[0])
                 grasp_pose_base_tmp.pose.orientation.y = float(q[1])
@@ -403,9 +412,11 @@ class Grasp(XArmUtilsWrapper, State):
                         except Exception:
                             pass
                 else:
-                    self.pr_node.get_logger().warn(
-                        "[Grasp] grasp_orientation IK failed, falling back to original grasp_pose."
+                    self.pr_node.get_logger().error(
+                        "[Grasp] All orientation IK candidates failed — "
+                        "target may be outside arm workspace. Aborting."
                     )
+                    return "except"
 
         ##############################
         ### Fast path: pre-planned ###
@@ -432,17 +443,27 @@ class Grasp(XArmUtilsWrapper, State):
             pre_plan = pre_plans.get(skill_key)
             if pre_plan is not None:
                 self.pr_node.get_logger().info(f"[Grasp] Executing pre-planned trajectory for {skill_key}.")
-                exec_success = self.xarm.execute_with_plan(pre_plan)
-                if not exec_success:
+                try:
+                    exec_success = self.xarm.execute_with_plan(pre_plan)
+                except AttributeError:
+                    self.pr_node.get_logger().warn(
+                        "[Grasp] execute_with_plan not available in xarm_utils. "
+                        "Falling through to re-plan. (Rebuild xarm_utils_cpp to enable fast path.)"
+                    )
+                    exec_success = None  # sentinel: fall through to Normal Path
+                if exec_success is None:
+                    pass  # fall through to Normal Path below
+                elif not exec_success:
                     self.pr_node.get_logger().error("[Grasp] Pre-planned execution failed.")
                     return "except"
-                if self._current_blackboard is not None:
-                    setattr(self._current_blackboard, 'grasp_trajectory', deepcopy(pre_plan))
-                try:
-                    self.xarm.gripper_close()
-                except Exception as e:
-                    self.pr_node.get_logger().warn(f"[Grasp] gripper_close failed but continue: {e}")
-                return "success"
+                else:
+                    if self._current_blackboard is not None:
+                        setattr(self._current_blackboard, 'grasp_trajectory', deepcopy(pre_plan))
+                    try:
+                        self.xarm.gripper_close()
+                    except Exception as e:
+                        self.pr_node.get_logger().warn(f"[Grasp] gripper_close failed but continue: {e}")
+                    return "success"
 
         ######################################
         ### Normal path: resolve → plan → execute/simulate ###
@@ -545,15 +566,24 @@ class Grasp(XArmUtilsWrapper, State):
                         return "except"
 
             pathseed_file = self._resolve_pathseed_file(pathseed_file)
-            self.pr_node.get_logger().info(f"[Grasp] Using pathseed file: {pathseed_file}")
-            success_generated = self.generate_stomp_path_from_pathseed(
-                file_path=pathseed_file,
-                start_joint_values=start_joint_values,
-                goal_joint_values=goal_joint_values
-            )
-            if not success_generated:
-                self.pr_node.get_logger().error("Failed to generate STOMP path from PathSeed.")
-                return "except"
+            if not pathseed_file:
+                self.pr_node.get_logger().warn(
+                    "[Grasp] No pathseed file available. Falling back to OMPL planning."
+                )
+                try:
+                    self.xarm.set_planning_pipeline("ompl")
+                except Exception as e:
+                    self.pr_node.get_logger().warn(f"[Grasp] set_planning_pipeline(ompl) failed: {e}")
+            else:
+                self.pr_node.get_logger().info(f"[Grasp] Using pathseed file: {pathseed_file}")
+                success_generated = self.generate_stomp_path_from_pathseed(
+                    file_path=pathseed_file,
+                    start_joint_values=start_joint_values,
+                    goal_joint_values=goal_joint_values
+                )
+                if not success_generated:
+                    self.pr_node.get_logger().error("Failed to generate STOMP path from PathSeed.")
+                    return "except"
         else:
             try:
                 self.xarm.set_planning_pipeline("ompl")

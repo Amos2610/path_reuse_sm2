@@ -289,14 +289,22 @@ class Put(XArmUtilsWrapper, State):
             pre_plan = pre_plans.get(skill_key)
             if pre_plan is not None:
                 self.pr_node.get_logger().info(f"[Put] Executing pre-planned trajectory for {skill_key}.")
-                exec_success = self.xarm.execute_with_plan(pre_plan)
-                if not exec_success:
-                    self.pr_node.get_logger().error("[Put] Pre-planned execution failed.")
-                    return "except"
-                if self._current_blackboard is not None:
-                    setattr(self._current_blackboard, 'put_trajectory', deepcopy(pre_plan))
-                self.xarm.gripper_open()
-                return "success"
+                try:
+                    exec_success = self.xarm.execute_with_plan(pre_plan)
+                except AttributeError:
+                    self.pr_node.get_logger().warn(
+                        "[Put] execute_with_plan not available in xarm_utils. "
+                        "Falling back to re-planning. (Rebuild xarm_utils_cpp to enable fast path.)"
+                    )
+                    exec_success = False
+                if exec_success:
+                    if self._current_blackboard is not None:
+                        setattr(self._current_blackboard, 'put_trajectory', deepcopy(pre_plan))
+                    self.xarm.gripper_open()
+                    return "success"
+                self.pr_node.get_logger().warn(
+                    "[Put] Pre-planned execution failed (robot state may have changed). Falling back to re-planning."
+                )
 
         ######################################
         ### Normal path: resolve → plan → execute/simulate ###
@@ -344,17 +352,23 @@ class Put(XArmUtilsWrapper, State):
                         self.pr_node.get_logger().error(f"Unknown phase: {self.phase}")
                         return "except"
 
-            if not pathseed_file.startswith('/'):
+            if pathseed_file and not pathseed_file.startswith('/'):
                 pathseed_file = os.path.join(self._get_workspace_root(), pathseed_file)
-            self.pr_node.get_logger().info(f"[Put] Using pathseed file: {pathseed_file}")
-            success_generated = self.generate_stomp_path_from_pathseed(
-                file_path=pathseed_file,
-                start_joint_values=start_joint_values,
-                goal_joint_values=goal_joint_values
-            )
-            if not success_generated:
-                self.pr_node.get_logger().error("Failed to generate STOMP path from PathSeed.")
-                return "except"
+            if not pathseed_file:
+                self.pr_node.get_logger().warn(
+                    "[Put] No pathseed file available. Falling back to OMPL planning."
+                )
+                self.xarm.set_planning_pipeline("ompl")
+            else:
+                self.pr_node.get_logger().info(f"[Put] Using pathseed file: {pathseed_file}")
+                success_generated = self.generate_stomp_path_from_pathseed(
+                    file_path=pathseed_file,
+                    start_joint_values=start_joint_values,
+                    goal_joint_values=goal_joint_values
+                )
+                if not success_generated:
+                    self.pr_node.get_logger().error("Failed to generate STOMP path from PathSeed.")
+                    return "except"
         else:
             self.xarm.set_planning_pipeline("ompl")
 
