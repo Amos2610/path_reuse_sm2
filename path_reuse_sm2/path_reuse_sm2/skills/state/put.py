@@ -84,6 +84,17 @@ class Put(XArmUtilsWrapper, State):
                 return os.path.dirname(os.path.dirname(first_path))
             return os.getcwd()
 
+    def _resolve_pathseed_file(self, pathseed_file: str) -> str:
+        if not pathseed_file:
+            return ''
+        if pathseed_file.startswith('/'):
+            return pathseed_file
+        ws_root = self._get_workspace_root()
+        if pathseed_file.startswith('src/'):
+            return os.path.join(ws_root, pathseed_file)
+        library_base = os.path.join(ws_root, 'src/path_reuse_method/pathseeds/Library')
+        return os.path.join(library_base, pathseed_file)
+
     def _publish_display_trajectory(self, plan_jt) -> None:
         """simulate_only 時に軌道をループパブリッシャーに渡す．"""
         if not hasattr(self.pr_node, '_viz_traj_loop'):
@@ -279,13 +290,14 @@ class Put(XArmUtilsWrapper, State):
             if pre_plan is not None:
                 self.pr_node.get_logger().info(f"[Put] Executing pre-planned trajectory for {skill_key}.")
                 exec_success = self.xarm.execute_with_plan(pre_plan)
-                if not exec_success:
-                    self.pr_node.get_logger().error("[Put] Pre-planned execution failed.")
-                    return "except"
-                if self._current_blackboard is not None:
-                    setattr(self._current_blackboard, 'put_trajectory', deepcopy(pre_plan))
-                self.xarm.gripper_open()
-                return "success"
+                if exec_success:
+                    if self._current_blackboard is not None:
+                        setattr(self._current_blackboard, 'put_trajectory', deepcopy(pre_plan))
+                    self.xarm.gripper_open()
+                    return "success"
+                self.pr_node.get_logger().warn(
+                    "[Put] Pre-planned execution failed (robot state may have changed). Falling back to re-planning."
+                )
 
         ######################################
         ### Normal path: resolve → plan → execute/simulate ###
@@ -339,8 +351,7 @@ class Put(XArmUtilsWrapper, State):
                         self.pr_node.get_logger().error(f"Unknown phase: {self.phase}")
                         return "except"
 
-            if not pathseed_file.startswith('/'):
-                pathseed_file = os.path.join(self._get_workspace_root(), pathseed_file)
+            pathseed_file = self._resolve_pathseed_file(pathseed_file)
             self.pr_node.get_logger().info(f"[Put] Using pathseed file: {pathseed_file}")
             success_generated = self.generate_stomp_path_from_pathseed(
                 file_path=pathseed_file,

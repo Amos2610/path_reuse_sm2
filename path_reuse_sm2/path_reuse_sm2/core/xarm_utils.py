@@ -52,6 +52,7 @@ class XArmRobotUtils:
         ik_service="/compute_ik",
         xarm=None,
         default_pose_frame=None,
+        default_ik_seed_joints=None,
     ):
         self.node = node
         self.base_frame = base_frame
@@ -60,6 +61,10 @@ class XArmRobotUtils:
         self.ik_service = ik_service
         self.xarm = xarm
         self.default_pose_frame = default_pose_frame or base_frame
+        self.default_ik_seed_joints = (
+            self.normalize_joint_list(default_ik_seed_joints)
+            or [0.916, 0.724, -1.70014, 0.001, 0.977, -0.67]
+        )
         self._ik_cli = None
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self.node)
@@ -72,6 +77,8 @@ class XArmRobotUtils:
 
         future.add_done_callback(_mark_done)
         if not done.wait(timeout_sec):
+            if hasattr(future, "cancel"):
+                future.cancel()
             self.node.get_logger().error(
                 f"[XArmRobotUtils] {label} timed out after {timeout_sec:.1f}s"
             )
@@ -107,6 +114,18 @@ class XArmRobotUtils:
         if not self.is_joint_list(value):
             return None
         return [float(v) for v in list(value)[:6]]
+
+    def _make_robot_state(self, joints):
+        joints = self.normalize_joint_list(joints)
+        if not joints:
+            return None
+
+        js = JointState()
+        js.name = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
+        js.position = joints
+        rs = RobotState()
+        rs.joint_state = js
+        return rs
 
     def pose_to_pose_stamped(self, pose):
         # TODO(real-robot): transform non-base-frame pose to base_frame using TF before IK.
@@ -192,14 +211,20 @@ class XArmRobotUtils:
             )
             return None
 
-    def compute_ik(self, pose, seed_joints: Optional[List[float]] = None):
+    def compute_ik(
+        self,
+        pose,
+        seed_joints: Optional[List[float]] = None,
+        timeout_sec: float = 3.0,
+        wait_timeout_sec: Optional[float] = None,
+    ):
         target = self.pose_to_pose_stamped(pose)
         target = self._transform_pose_to_base(target)
         if target is None:
             return None
         
         # baseのz座標は決め打ち
-        target.pose.position.z = 0.125
+        target.pose.position.z = 0.14
 
         if self._ik_cli is None:
             self._ik_cli = self.node.create_client(GetPositionIK, self.ik_service)
@@ -212,22 +237,32 @@ class XArmRobotUtils:
         req.ik_request.group_name = self.move_group
         req.ik_request.ik_link_name = self.ee_link
         req.ik_request.pose_stamped = target
-        req.ik_request.timeout = DurationMsg(sec=3, nanosec=0)
+        timeout_sec = max(float(timeout_sec), 0.1)
+        sec = int(timeout_sec)
+        req.ik_request.timeout = DurationMsg(
+            sec=sec,
+            nanosec=int((timeout_sec - sec) * 1e9),
+        )
         req.ik_request.avoid_collisions = False
 
-        # seed_joints をセットすると姿勢の初期ジョイントがセットできる
-        if seed_joints is not None and len(seed_joints) >= 6:
-            js = JointState()
-            js.name = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
-            js.position = [float(v) for v in seed_joints[:6]]
-            rs = RobotState()
-            rs.joint_state = js
-            req.ik_request.robot_state = rs
+        # Always seed IK. An empty RobotState can make /compute_ik wait on
+        # current-state plumbing, which is unreliable in fake/sim setups.
+        effective_seed_joints = self.normalize_joint_list(seed_joints)
+        seed_source = "explicit"
+        if not effective_seed_joints:
+            effective_seed_joints = self.default_ik_seed_joints
+            seed_source = "default"
+        robot_state = self._make_robot_state(effective_seed_joints)
+        if robot_state is not None:
+            req.ik_request.robot_state = robot_state
 
         self.node.get_logger().info(
             "[XArmRobotUtils] Sending IK request: "
             f"service={self.ik_service}, group={self.move_group}, "
-            f"ee_link={self.ee_link}, seed_joints={'yes' if seed_joints is not None else 'no'}"
+            f"ee_link={self.ee_link}, seed_joints={seed_source}, "
+            f"target=({target.pose.position.x:.4f}, "
+            f"{target.pose.position.y:.4f}, {target.pose.position.z:.4f}), "
+            f"timeout={timeout_sec:.1f}s"
         )
         future = self._ik_cli.call_async(req)
         # PRSMNode is already attached to MultiThreadedExecutor in sm_node_with_rag.py.
@@ -236,7 +271,13 @@ class XArmRobotUtils:
         # "cannot use Destroyable" followed by "IndexError: wait set index too big".
         # Wait on the future callback instead; another executor thread receives the
         # service response while this skill callback is blocked.
-        res = self._wait_for_service_future(future, timeout_sec=5.0, label="IK service call")
+        if wait_timeout_sec is None:
+            wait_timeout_sec = timeout_sec + 2.0
+        res = self._wait_for_service_future(
+            future,
+            timeout_sec=wait_timeout_sec,
+            label="IK service call",
+        )
 
         if res is None:
             self.node.get_logger().error("[XArmRobotUtils] IK service call failed")
