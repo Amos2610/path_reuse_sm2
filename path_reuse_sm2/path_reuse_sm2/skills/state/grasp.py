@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import math
 import os
 import time
 from copy import deepcopy
@@ -14,6 +15,13 @@ from path_reuse_sm2.core.path_registry import PathRegistry
 
 
 class Grasp(XArmUtilsWrapper, State):
+    def __setattr__(self, name, value):
+        # DEBUG: xarm属性の上書きを検出して警告（誤って上書きしていないか確認するため）
+        if name == "xarm" and hasattr(self, "xarm"):
+            import traceback
+            raise AttributeError("self.xarm overwrite\n" + "".join(traceback.format_stack(limit=6)))
+        super().__setattr__(name, value)
+
     def __init__(self, node, **kwargs):
         State.__init__(self, outcomes=["success", "loop", "except"])
         XArmUtilsWrapper.__init__(self)
@@ -44,8 +52,13 @@ class Grasp(XArmUtilsWrapper, State):
             f"kwargs.pose_frame_id={repr(kwargs.get('pose_frame_id', ''))}, "
             f"grasp_pose_type={type(self.grasp_pose).__name__}, "
             f"grasp_pose_len={len(self.grasp_pose) if isinstance(self.grasp_pose, (list, tuple)) else 'n/a'}"
+            f"execute_with_plan available: {hasattr(self.xarm, 'execute_with_plan')}"
         )
 
+        if not hasattr(self.xarm, 'execute_with_plan'):
+            self.pr_node.get_logger().error(f"execute_with_plan is not available on this xarm instance.")
+            raise NotImplementedError("execute_with_plan method is required in XArmUtilsWrapper for Grasp state.")
+        
         # Path Registry
         self.source_id = kwargs.get("source_location", "HOME")
         # Grasp は (workpiece の場所, workpiece_id) の組み合わせで管理
@@ -66,6 +79,9 @@ class Grasp(XArmUtilsWrapper, State):
         _down = [1.0, 0.0, 0.0, 0.0]
         self.pre_grasp_orientation = kwargs.get("pre_grasp_orientation", _down)
         self.grasp_orientation = kwargs.get("grasp_orientation", _down)
+        # True にすると検出ポーズのヨー角（Z軸回転）をグラスプ姿勢に引き継ぐ
+        # ROSパラメータ grasp_free_yaw で設定（ros2 param set / launchファイル）
+        self.free_yaw = self.pr_node.get_parameter("grasp_free_yaw").value
         self._tf_broadcaster = TransformBroadcaster(self.pr_node)
 
         # variables
@@ -98,14 +114,134 @@ class Grasp(XArmUtilsWrapper, State):
                 return os.path.dirname(os.path.dirname(first_path))
             return os.getcwd()
 
+    def _apply_yaw_from_pose(self, base_quat_xyzw, pose_stamped_base):
+        """検出ポーズ（base frame）からヨー角を抽出し、base_quat_xyzwに合成して返す。
+
+        上から掴む際に「グリッパーは真下向き固定、Z軸まわり回転のみオブジェクトに追従」
+        させるためのヘルパー。
+
+        Args:
+            base_quat_xyzw: 真下向き基準クォータニオン [x, y, z, w]
+            pose_stamped_base: 検出オブジェクトのポーズ（link_base座標系）
+
+        Returns:
+            合成後のクォータニオン [x, y, z, w]
+        """
+        q = pose_stamped_base.pose.orientation
+        # base frame Z軸まわりのヨー角を抽出
+        yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+        )
+        sz, cz = math.sin(yaw / 2.0), math.cos(yaw / 2.0)
+        # q_yaw = [0, 0, sz, cz] と q_base を合成: q_result = q_yaw * q_base
+        bx, by, bz, bw = base_quat_xyzw
+        result = [
+            cz * bx - sz * by,
+            cz * by + sz * bx,
+            cz * bz + sz * bw,
+            cz * bw - sz * bz,
+        ]
+        self.pr_node.get_logger().info(
+            f"[Grasp] free_yaw: detected yaw={math.degrees(yaw):.1f}deg, "
+            f"combined_quat={[f'{v:.4f}' for v in result]}"
+        )
+        return result
+
+    def _yaw_from_pose(self, pose_stamped_base) -> float:
+        q = pose_stamped_base.pose.orientation
+        return math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+        )
+
+    def _compose_yaw_with_base_quat(self, base_quat_xyzw, yaw: float):
+        sz, cz = math.sin(yaw / 2.0), math.cos(yaw / 2.0)
+        bx, by, bz, bw = base_quat_xyzw
+        return [
+            cz * bx - sz * by,
+            cz * by + sz * bx,
+            cz * bz + sz * bw,
+            cz * bw - sz * bz,
+        ]
+
+    def _set_pose_orientation(self, pose_stamped, quat_xyzw):
+        pose_stamped.pose.orientation.x = float(quat_xyzw[0])
+        pose_stamped.pose.orientation.y = float(quat_xyzw[1])
+        pose_stamped.pose.orientation.z = float(quat_xyzw[2])
+        pose_stamped.pose.orientation.w = float(quat_xyzw[3])
+
+    def _compute_grasp_ik_candidates(self, grasp_pose_base):
+        """Try equivalent top-grasp wrist branches before declaring the pose unreachable."""
+        import math as _math
+        _px = grasp_pose_base.pose.position.x
+        _py = grasp_pose_base.pose.position.y
+        _horiz = _math.sqrt(_px ** 2 + _py ** 2)
+        if _horiz > 0.70:
+            self.pr_node.get_logger().warn(
+                f"[Grasp] Horizontal reach {_horiz:.3f}m may exceed xArm6 max workspace (~0.695m). "
+                f"Target: x={_px:.3f}, y={_py:.3f}. IK will likely fail."
+            )
+        candidates = []
+        if self.grasp_orientation is not None:
+            if self.free_yaw:
+                detected_yaw = self._yaw_from_pose(grasp_pose_base)
+                for label, yaw_offset in [
+                    ("detected", 0.0),
+                    ("detected+180", math.pi),
+                    ("detected+90", math.pi / 2.0),
+                    ("detected-90", -math.pi / 2.0),
+                ]:
+                    quat = self._compose_yaw_with_base_quat(
+                        self.grasp_orientation,
+                        detected_yaw + yaw_offset,
+                    )
+                    candidates.append((label, quat))
+            else:
+                candidates.append(("configured", self.grasp_orientation))
+
+        raw_q = grasp_pose_base.pose.orientation
+        candidates.append(("detected_raw", [raw_q.x, raw_q.y, raw_q.z, raw_q.w]))
+
+        seen = set()
+        for label, quat in candidates:
+            key = tuple(round(float(v), 4) for v in quat)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            candidate_pose = deepcopy(grasp_pose_base)
+            self._set_pose_orientation(candidate_pose, quat)
+            self.pr_node.get_logger().info(
+                f"[Grasp] IK candidate {label}: quat={[f'{v:.4f}' for v in quat]}"
+            )
+            joints = self.robot_utils.normalize_joint_list(
+                self.robot_utils.compute_ik(
+                    candidate_pose,
+                    timeout_sec=0.8,
+                    wait_timeout_sec=1.6,
+                )
+            )
+            if joints is not None:
+                self.pr_node.get_logger().info(
+                    f"[Grasp] IK candidate {label} succeeded: {joints}"
+                )
+                return joints, candidate_pose
+
+        return None, None
+
     def _offset_pose_along_approach(self, pose_stamped, offset_m: float):
         """link_base座標系のZ軸上方にoffset_mだけ離れたpre_graspを計算する（上方向把持用）。
         self.pre_grasp_orientation が設定されている場合はそのorientationで上書きする。
+        free_yaw=True の場合はポーズのヨー角を引き継ぐ。
         """
         pre_grasp = deepcopy(pose_stamped)
         pre_grasp.pose.position.z += offset_m
         if self.pre_grasp_orientation is not None:
-            q = self.pre_grasp_orientation
+            if self.free_yaw:
+                q = self._apply_yaw_from_pose(self.pre_grasp_orientation, pose_stamped)
+            else:
+                q = self.pre_grasp_orientation
             pre_grasp.pose.orientation.x = float(q[0])
             pre_grasp.pose.orientation.y = float(q[1])
             pre_grasp.pose.orientation.z = float(q[2])
@@ -387,13 +523,8 @@ class Grasp(XArmUtilsWrapper, State):
                 and not self.robot_utils.is_joint_list(self.obj_joints)):
             grasp_pose_base_tmp = self.robot_utils.transform_to_base(self.grasp_pose)
             if grasp_pose_base_tmp is not None:
-                q = self.grasp_orientation
-                grasp_pose_base_tmp.pose.orientation.x = float(q[0])
-                grasp_pose_base_tmp.pose.orientation.y = float(q[1])
-                grasp_pose_base_tmp.pose.orientation.z = float(q[2])
-                grasp_pose_base_tmp.pose.orientation.w = float(q[3])
-                forced_joints = self.robot_utils.normalize_joint_list(
-                    self.robot_utils.compute_ik(grasp_pose_base_tmp)
+                forced_joints, forced_pose = self._compute_grasp_ik_candidates(
+                    grasp_pose_base_tmp
                 )
                 if forced_joints is not None:
                     self.pr_node.get_logger().info(
@@ -402,6 +533,8 @@ class Grasp(XArmUtilsWrapper, State):
                     # blackboard 経由は Yasmin の内部 dict に反映されない場合があるため
                     # self.obj_joints に直接セットして resolve_joints に確実に渡す
                     self.obj_joints = forced_joints
+                    if forced_pose is not None:
+                        self.grasp_pose = forced_pose
                     try:
                         blackboard["obj_joints"] = forced_joints
                     except Exception:
@@ -410,9 +543,11 @@ class Grasp(XArmUtilsWrapper, State):
                         except Exception:
                             pass
                 else:
-                    self.pr_node.get_logger().warn(
-                        "[Grasp] grasp_orientation IK failed, falling back to original grasp_pose."
+                    self.pr_node.get_logger().error(
+                        "[Grasp] All orientation IK candidates failed — "
+                        "target may be outside arm workspace. Aborting."
                     )
+                    return "except"
 
         ##############################
         ### Fast path: pre-planned ###
@@ -427,15 +562,19 @@ class Grasp(XArmUtilsWrapper, State):
                 self.pr_node.get_logger().info(f"[Grasp] Executing pre-planned trajectory for {skill_key}.")
                 exec_success = self.xarm.execute_with_plan(pre_plan)
                 if not exec_success:
-                    self.pr_node.get_logger().error("[Grasp] Pre-planned execution failed.")
-                    return "except"
-                if self._current_blackboard is not None:
-                    setattr(self._current_blackboard, 'grasp_trajectory', deepcopy(pre_plan))
-                try:
-                    self.xarm.gripper_close()
-                except Exception as e:
-                    self.pr_node.get_logger().warn(f"[Grasp] gripper_close failed but continue: {e}")
-                return "success"
+                    self.pr_node.get_logger().warn(
+                        "[Grasp] Pre-planned execution failed (robot state may have changed). "
+                        "Falling back to re-planning."
+                    )
+                    # Fall through to normal planning path below
+                else:
+                    if self._current_blackboard is not None:
+                        setattr(self._current_blackboard, 'grasp_trajectory', deepcopy(pre_plan))
+                    try:
+                        self.xarm.gripper_close()
+                    except Exception as e:
+                        self.pr_node.get_logger().warn(f"[Grasp] gripper_close failed but continue: {e}")
+                    return "success"
 
         ######################################
         ### Normal path: resolve → plan → execute/simulate ###
@@ -478,7 +617,10 @@ class Grasp(XArmUtilsWrapper, State):
                     # （シードなしIKが別の肘構成を返した場合でも、ここで揃える）
                     grasp_pose_base_oriented = deepcopy(grasp_pose_base)
                     if self.grasp_orientation is not None:
-                        q = self.grasp_orientation
+                        if self.free_yaw:
+                            q = self._apply_yaw_from_pose(self.grasp_orientation, grasp_pose_base)
+                        else:
+                            q = self.grasp_orientation
                         grasp_pose_base_oriented.pose.orientation.x = float(q[0])
                         grasp_pose_base_oriented.pose.orientation.y = float(q[1])
                         grasp_pose_base_oriented.pose.orientation.z = float(q[2])

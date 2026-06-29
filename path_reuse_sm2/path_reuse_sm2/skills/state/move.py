@@ -54,12 +54,19 @@ class Move(State):
             if pre_plan is not None:
                 self.pr_node.get_logger().info(f"[Move] Executing pre-planned trajectory for {skill_key}.")
                 exec_success = self.xarm.execute_with_plan(pre_plan)
-                if not exec_success:
-                    self.pr_node.get_logger().error("[Move] Pre-planned execution failed.")
-                    return "except"
-                if blackboard is not None:
-                    setattr(blackboard, "move_joints", list(pre_plan.points[-1].positions) if pre_plan.points else [])
-                return "success"
+                if exec_success:
+                    if blackboard is not None:
+                        setattr(blackboard, "move_joints", list(pre_plan.points[-1].positions) if pre_plan.points else [])
+                        return "success"
+                    else:
+                        self.pr_node.get_logger().error(f"[Move] Failed to set move_joints in blackboard for {skill_key}.")
+                        return "except"
+                else:
+                    self.pr_node.get_logger().error(f"[Move] Execution of pre-planned trajectory failed for {skill_key}.")
+
+                self.pr_node.get_logger().warn(
+                    "[Move] Pre-planned execution failed (start-state mismatch?). Falling back to re-plan."
+                )
 
         ######################################
         ### Normal path: plan → simulate/execute ###
@@ -101,6 +108,24 @@ class Move(State):
                     setattr(blackboard, "move_joints", move_joints)
                 return "success"
             else:
+                # デバッグ情報の追加
+                try:
+                    current = self.xarm.get_current_joint_values()
+                except Exception as e:
+                    current = None
+                    self.pr_node.get_logger().warn(f"[Move] get_current_joint_values failed: {e}")
+
+                self.pr_node.get_logger().info(f"[Move] current joints before execute: {current}")
+                self.pr_node.get_logger().info(f"[Move] target joints: {move_joints}")
+                jt = getattr(plan, "joint_trajectory", plan)
+                self.pr_node.get_logger().info(
+                    f"[Move] plan points={len(jt.points) if hasattr(jt, 'points') else 'unknown'}"
+                )
+                if hasattr(jt, "points") and jt.points:
+                    self.pr_node.get_logger().info(f"[Move] first point={list(jt.points[0].positions)}")
+                    self.pr_node.get_logger().info(f"[Move] last point={list(jt.points[-1].positions)}")
+
+
                 try:
                     exec_success = self.xarm.execute()
                 except Exception as e:

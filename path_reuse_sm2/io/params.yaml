@@ -8,6 +8,7 @@ prsm_node:      # ノード名
     pathseed_put: "src/path_reuse_method/pathseeds/Library/ex1_pick_and_place/pre_defined/place/pathseed_place_0627_STOMP10.txt"
     pathseed_registry_path: "src/rag_factory_specific_task_agent/rag_factory_specific_task_agent/data/path_registry.json"
     loop: false
+    grasp_free_yaw: True
 
     # # ----------- 例: ex1 の姿勢/目標 -----------
     # ex1:

@@ -43,8 +43,8 @@ class FindObj(State):
 
         # --- カメラ関連（将来の検出実装用） ---
         qos = qos_profile_sensor_data
-        self.image_topic = kwargs.get("image_topic", "/camera/camera/color/image_raw")
-        self.camera_info_topic = kwargs.get("camera_info_topic", "/camera/camera/color/camera_info")
+        self.image_topic = kwargs.get("image_topic", "/camera/hand_camera/color/image_raw")
+        self.camera_info_topic = kwargs.get("camera_info_topic", "/camera/hand_camera/color/camera_info")
         self.camera_info_wait_timeout = float(kwargs.get("camera_info_wait_timeout", 2.0))
         self.camera_info_wait_poll_sec = float(kwargs.get("camera_info_wait_poll_sec", 0.05))
 
@@ -90,9 +90,6 @@ class FindObj(State):
     def _camera_info_callback(self, msg: CameraInfo) -> None:
         self.info_msg = msg
         self.camera_frame_id = msg.header.frame_id
-        self.pr_node.get_logger().info(
-            f"[FindObj][frame] camera_info callback frame_id={repr(msg.header.frame_id)}"
-        )
         if self.camera_model is not None:
             try:
                 self.camera_model.fromCameraInfo(msg)
@@ -191,7 +188,25 @@ class FindObj(State):
             self.pr_node.get_logger().info(
                 "[FindObj] Recognition result from RAG/KB. Skipping detection."
             )
+            if hasattr(self, 'image_sub') and self.image_sub is not None:
+                self.pr_node.destroy_subscription(self.image_sub)
+                self.image_sub = None
+            if hasattr(self, 'info_sub') and self.info_sub is not None:
+                self.pr_node.destroy_subscription(self.info_sub)
+                self.info_sub = None
+            if hasattr(self, 'tf_listener') and self.tf_listener is not None:
+                self.tf_listener = None
             return "success"
+
+        # --- cleanup subscriptions to avoid leak ---
+        if hasattr(self, 'image_sub') and self.image_sub is not None:
+            self.pr_node.destroy_subscription(self.image_sub)
+            self.image_sub = None
+        if hasattr(self, 'info_sub') and self.info_sub is not None:
+            self.pr_node.destroy_subscription(self.info_sub)
+            self.info_sub = None
+        if hasattr(self, 'tf_listener') and self.tf_listener is not None:
+            self.tf_listener = None
 
         # TODO: GroundedSAM2 による検出を実装する
         #
