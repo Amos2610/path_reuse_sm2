@@ -613,5 +613,18 @@ class Grasp(XArmUtilsWrapper, State):
                 self.pr_node.get_logger().warn(f"[Grasp] gripper_close failed but continue: {e}")
             return "success"
         else:
-            self.pr_node.get_logger().warn("No valid plan found, retrying...")
+            # JACIII安全性評価実験用の修正：put.pyと同じ理由で，try_count/
+            # max_retries_defaultの上限チェックが未実装のまま無限リトライ
+            # していたバグを修正（詳細はput.pyの同箇所コメント参照）。
+            self.try_count += 1
+            if self.try_count > self.max_retries_default:
+                self.pr_node.get_logger().error(
+                    f"No valid plan found after {self.try_count} attempts "
+                    f"(max_retries_default={self.max_retries_default}). Aborting Grasp skill."
+                )
+                self.try_count = 0
+                return "except"
+            self.pr_node.get_logger().warn(
+                f"No valid plan found, retrying... (attempt {self.try_count}/{self.max_retries_default})"
+            )
             return "loop"
