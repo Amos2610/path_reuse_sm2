@@ -378,5 +378,21 @@ class Put(XArmUtilsWrapper, State):
             self.xarm.gripper_open()
             return "success"
         else:
-            self.pr_node.get_logger().warn("No valid plan found, retrying...")
+            # JACIII安全性評価実験用の修正：max_retries_defaultが宣言されているのに
+            # 一度も参照されておらず，実現不可能な関節目標（例：可動域を大きく超える値）
+            # に対して無限にリトライし続けるバグを発見した（PRSM本来の
+            # 「タイムアウトで停止する」という設計主張と矛盾する挙動）。
+            # try_countを実際にインクリメント・上限チェックするよう修正し，
+            # 上限に達したら"except"（中断）を返すようにする。
+            self.try_count += 1
+            if self.try_count > self.max_retries_default:
+                self.pr_node.get_logger().error(
+                    f"No valid plan found after {self.try_count} attempts "
+                    f"(max_retries_default={self.max_retries_default}). Aborting Put skill."
+                )
+                self.try_count = 0
+                return "except"
+            self.pr_node.get_logger().warn(
+                f"No valid plan found, retrying... (attempt {self.try_count}/{self.max_retries_default})"
+            )
             return "loop"
