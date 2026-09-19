@@ -186,9 +186,8 @@ class PRSMNode(Node):
         # --- IK（実行前検査）---
         # ik_avoid_collisions: IK に planning scene との衝突回避を要求する
         self.declare_parameter("ik_avoid_collisions", True)
-        # ik_base_z_override: IK 目標の base 系 z を固定値で上書き（負なら上書きしない）。
-        # 0.125 は研究版が決め打ちしていた値。実験では -1.0 にして検出／KB の高さを使う
-        self.declare_parameter("ik_base_z_override", 0.125)
+        # ik_base_z_override: IK 目標の base 系 z を固定値で上書き（負なら上書きしない）
+        self.declare_parameter("ik_base_z_override", -1.0)
         # grasp_yaw_search_deg: 把持目標が干渉するとき接近軸まわりに振る角度[deg]。
         # 平行グリッパでは 180 度以外は把持方向が変わるので既定は 180 のみ
         self.declare_parameter("grasp_yaw_search_deg", [180.0])

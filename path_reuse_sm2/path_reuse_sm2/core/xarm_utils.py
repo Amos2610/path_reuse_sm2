@@ -23,12 +23,11 @@ def _call_service(client, request, timeout_sec: float):
     """サービスを呼び、**ノードを spin せずに**応答を待つ。
 
     ``rclpy.spin_until_future_complete(node, ...)`` はノードをグローバル executor にも
-    登録して回すため、PRSM ノードが既に動いている MultiThreadedExecutor と二重所有に
-    なる。ロボアプリ版の実測（2026-08-25）では 2 タスク目以降の ``/prsm_task_set`` が
-    コールバックに届かなくなった。future の done コールバックで ``threading.Event`` を
-    立てて待てば、応答は既に動いている executor のスレッドで配送され、ノードの
-    再登録は起きない。応答が来なければ None。
-    （ロボアプリ版 nex10_utils.py:29-61 からの移植）
+    登録して回すため、既に動いている MultiThreadedExecutor と二重所有になり、
+    2 タスク目以降の ``/prsm_task_set`` がコールバックに届かなくなることがある。
+    future の done コールバックで ``threading.Event`` を立てて待てば、応答は既に
+    動いている executor のスレッドで配送され、ノードの再登録は起きない。
+    応答が来なければ None。
     """
     future = client.call_async(request)
     done = threading.Event()
@@ -210,11 +209,9 @@ class XArmRobotUtils:
     def _base_z_override(self):
         """IK 目標の base 系 z を固定値で上書きするか（パラメータ ik_base_z_override）。
 
-        負の値なら上書きしない。既定 0.125 は研究版が決め打ちしていた値で、
-        従来挙動を保つために既定として残している。実験構成では -1.0 にして
-        検出／KB の高さをそのまま使う。
+        負の値（既定）なら上書きせず、検出／KB の高さをそのまま使う。
         """
-        v = self._param("ik_base_z_override", 0.125)
+        v = self._param("ik_base_z_override", -1.0)
         try:
             v = float(v)
         except Exception:
@@ -235,7 +232,6 @@ class XArmRobotUtils:
         ``fallback_to_collision=False`` なら None を返し（干渉解に落とさない。呼び手が
         別の姿勢を試すためのモード）、True なら理由を WARN に残してから衝突を許して
         解き直す。
-        （ロボアプリ版 nex10_utils.py:263-353 からの移植）
         """
         target = self.pose_to_pose_stamped(pose)
         target = self._transform_pose_to_base(target)
@@ -313,11 +309,9 @@ class XArmRobotUtils:
     def _read_fresh_joint_state(self, timeout_sec: float = 1.0):
         """/joint_states を使い捨てノードで 1 通だけ読む。
 
-        move_group interface 経由の現在値は spin 枯渇で古い値を返すことがある
-        （ロボアプリ版の実測 2026-08-28: 前タスクの把持姿勢が返り、承認後の実行が
-        Invalid Trajectory: start point deviates で止まった）。使い捨てノード＋
-        自前 executor なので既存ノードの spin とは衝突しない。
-        （ロボアプリ版 nex10_utils.py:355-389 からの移植）
+        move_group interface 経由の現在値は spin 枯渇で古い値を返すことがあり、
+        承認後の実行が開始点のずれで止まる原因になる。使い捨てノード＋自前 executor
+        なので既存ノードの spin とは衝突しない。
         """
         import os as _os
         import time as _time
