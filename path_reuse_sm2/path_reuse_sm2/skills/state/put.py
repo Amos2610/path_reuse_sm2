@@ -13,6 +13,7 @@ from path_reuse_method.path_seed_client import PathSeedClient
 from path_reuse_sm2.core.xarm_utils import XArmUtilsWrapper, XArmRobotUtils
 from path_reuse_sm2.core.path_registry import PathRegistry
 from path_reuse_sm2.core.grasp_orientation import approach_from_orientation, rotate_about_approach
+from path_reuse_sm2.core import plan_helpers as ph
 import os
 
 
@@ -80,7 +81,7 @@ class Put(XArmUtilsWrapper, State):
         self.max_retries_default = 2
         self.max_velocity_scale_default = 0.3
         self.max_accel_scale_default = 0.3
-        self.planning_time_default = 2.0
+        self.planning_time_default = float(ph.param(self.pr_node, "planning_time_put", 5.0))
 
     def _get_workspace_root(self) -> str:
         import os
@@ -484,13 +485,20 @@ class Put(XArmUtilsWrapper, State):
             except Exception as e:
                 self.pr_node.get_logger().warn(f"[Put] set_planning_pipeline(ompl) failed but continue: {e}")
 
+        ph.apply_planning_time(self.xarm, self.pr_node, self.planning_time_default, "Put")
+
+        ph.apply_start_state(self.xarm, self.pr_node, simulate_only, start_joint_values, "Put")
+
         self.xarm.set_joint_value_target(goal_joint_values)
+
         success, plan, _, _ = self.xarm.plan()
         if success:
             if simulate_only:
                 self.pr_node.get_logger().info(f"[Put] Storing pre-planned trajectory for {skill_key}.")
                 self._publish_display_trajectory(plan)
                 self.pr_node._pre_planned_trajectories[skill_key] = plan
+                if plan is not None and plan.points:
+                    ph.set_sim_end_joints(self._current_blackboard, plan.points[-1].positions)
                 if self._current_blackboard is not None:
                     setattr(self._current_blackboard, 'put_trajectory', deepcopy(plan))
                 return "success"

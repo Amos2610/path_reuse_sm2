@@ -15,6 +15,9 @@ prsm_node:      # ノード名
     grasp_yaw_search_deg: [180.0]  # 接近軸まわりに振る角度[deg]。平行グリッパは 180 のみ
     grasp_shift_search_m: [0.0]    # 把持位置を水平にずらす量[m]。0 のみなら無効
     put_yaw_search_deg: [180.0]    # 置き姿勢が干渉するとき接近軸まわりに振る角度[deg]
+    # ----------- 計画時間 -----------
+    planning_time_grasp: 5.0       # Grasp の計画時間[s]（MoveGroupInterface 既定と同じ）
+    planning_time_put: 5.0         # Put の計画時間[s]
 
     # # ----------- 例: ex1 の姿勢/目標 -----------
     # ex1:

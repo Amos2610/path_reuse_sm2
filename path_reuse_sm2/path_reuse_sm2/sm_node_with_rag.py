@@ -188,6 +188,9 @@ class PRSMNode(Node):
         self.declare_parameter("grasp_shift_search_m", [0.0])
         # put_yaw_search_deg: 置き姿勢が干渉するとき接近軸まわりに振る角度[deg]（既定 180 のみ）
         self.declare_parameter("put_yaw_search_deg", [180.0])
+        # planning_time_*: MoveGroupInterface の計画時間[s]（MotionPlanRequest のフィールド）
+        self.declare_parameter("planning_time_grasp", 5.0)
+        self.declare_parameter("planning_time_put", 5.0)
 
         # --- 監視用パラメータ ---
         # 実行監視ノードがポーリングして、ロボットの現在状態を把握するためのパラメータ群
