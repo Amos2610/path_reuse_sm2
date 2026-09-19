@@ -5,6 +5,9 @@ from .base import Skill
 
 _SKILLS: Dict[str, Type[Skill]] = {}
 
+# Import failures from the most recent discover() call: module name -> "ExcType: message".
+_FAILURES: Dict[str, str] = {}
+
 def skill(name: str | None = None, names: Iterable[str] | None = None) -> Callable[[Type[Skill]], Type[Skill]]:
     """@skill('SkillGraspObj') or @skill(names=['SkillGraspObj','GraspObj'])"""
     def _wrap(cls: Type[Skill]) -> Type[Skill]:
@@ -19,10 +22,12 @@ def skill(name: str | None = None, names: Iterable[str] | None = None) -> Callab
 
 def discover(package: str = "path_reuse_sm2.skills") -> None:
     """skills/ 配下を import して @skill 登録を発火"""
+    _FAILURES.clear()
     try:
         pkg = importlib.import_module(package)
     except Exception as e:
         print(f"[discover] failed to import package {package}: {e}")
+        _FAILURES[package] = f"{type(e).__name__}: {e}"
         return
     if not hasattr(pkg, "__path__"):
         return
@@ -31,6 +36,7 @@ def discover(package: str = "path_reuse_sm2.skills") -> None:
             importlib.import_module(m.name)
         except Exception as e:
             print(f"[discover] failed to import module {m.name}: {e}")
+            _FAILURES[m.name] = f"{type(e).__name__}: {e}"
             import traceback
             traceback.print_exc()
             continue
@@ -40,3 +46,7 @@ def get(name: str) -> Type[Skill]:
 
 def names() -> List[str]:
     return sorted(_SKILLS.keys())
+
+def failures() -> Dict[str, str]:
+    """Skill-module import failures recorded by the last discover() call."""
+    return dict(_FAILURES)

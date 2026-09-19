@@ -13,6 +13,8 @@ from path_reuse_method.path_seed_client import PathSeedClient
 from path_reuse_sm2.core.xarm_utils import XArmUtilsWrapper, XArmRobotUtils
 from path_reuse_sm2.core.path_registry import PathRegistry
 from path_reuse_sm2.core.grasp_orientation import approach_from_orientation, rotate_about_approach
+from path_reuse_sm2.core import plan_helpers as ph
+from path_reuse_sm2.core import trial_record as tr
 
 
 class Grasp(XArmUtilsWrapper, State):
@@ -82,7 +84,7 @@ class Grasp(XArmUtilsWrapper, State):
         self.max_retries_default = 2
         self.max_velocity_scale_default = 0.3
         self.max_accel_scale_default = 0.3
-        self.planning_time_default = 2.0
+        self.planning_time_default = float(ph.param(self.pr_node, "planning_time_grasp", 5.0))
 
     def _ensure_path_seed_client(self) -> PathSeedClient:
         if self.pr_client is None:
@@ -275,6 +277,7 @@ class Grasp(XArmUtilsWrapper, State):
         self.pr_node.get_logger().warn(
             f"[Grasp] 把持目標は yaw {len(orientations)} 通り・ずらし {len(shifts)} 通りのどれでも干渉する。干渉解で続ける"
         )
+        tr.record_event(self.pr_node, "ik_search_exhausted", skill="Grasp", yaw=len(orientations), shift=len(shifts))
         return None, None, None
 
     def _realign_pre_grasp(self, grasp_pose, q, goal_joints):
@@ -393,8 +396,11 @@ class Grasp(XArmUtilsWrapper, State):
             self.pr_node.get_logger().info("[Grasp] Decoding pathseed via PathSeedClient...")
             pr_client = self._ensure_path_seed_client()
             decoded_path = pr_client.send_decode_path_seed(file_path, start_joint_values, goal_joint_values)
-            if decoded_path is None:
-                self.pr_node.get_logger().error("[Grasp] decode failed: None returned.")
+            rows = int(getattr(decoded_path, "rows", 0) or 0) if decoded_path is not None else 0
+            tr.record_event(self.pr_node, "seed", skill="Grasp", path=str(file_path), rows=rows)
+            if decoded_path is None or rows == 0:
+                self.pr_node.get_logger().error(f"[Grasp] decode failed: {'None returned' if decoded_path is None else 'empty seed (rows=0)'}: {file_path}")
+                tr.record_stop(self.pr_node, "E-seed", "seed_decode", f"{file_path}")
                 return False
             self.pr_node.get_logger().info("[Grasp] Setting decoded pathseed...")
             pr_client.send_set_path_seed(decoded_path)
@@ -623,11 +629,13 @@ class Grasp(XArmUtilsWrapper, State):
         joint_values = self.set_start_and_goal_joint_values(blackboard)
         if joint_values is None:
             self.pr_node.get_logger().error("Failed to set start/goal joint values.")
+            tr.record_stop(self.pr_node, "E-ik", "ik_goal", "Grasp: start/goal joint values unresolved")
             return "except"
 
         start_joint_values, goal_joint_values = joint_values
         if not goal_joint_values:
             self.pr_node.get_logger().error("Failed to set joint value target.")
+            tr.record_stop(self.pr_node, "E-ik", "ik_goal", "Grasp: goal joint values empty")
             return "except"
 
         # ==============================
@@ -738,6 +746,7 @@ class Grasp(XArmUtilsWrapper, State):
             )
             if not success_generated:
                 self.pr_node.get_logger().error("Failed to generate STOMP path from PathSeed.")
+                tr.record_stop(self.pr_node, "E-seed", "seed_decode", f"Grasp: {pathseed_file}")
                 return "except"
         else:
             try:
@@ -753,6 +762,8 @@ class Grasp(XArmUtilsWrapper, State):
         # simulate_only では実機動作を避けるため、pre-grasp の実行は行わない。
         if not simulate_only and not use_pathseed and pre_grasp_joints is not None:
             self.pr_node.get_logger().info("[Grasp] Planning to pre-grasp position...")
+            ph.apply_planning_time(self.xarm, self.pr_node, self.planning_time_default, "Grasp")
+            ph.apply_start_state(self.xarm, self.pr_node, simulate_only, start_joint_values, "Grasp")
             self.xarm.set_joint_value_target(pre_grasp_joints)
             success_pre, _, _, _ = self.xarm.plan()
             if success_pre:
@@ -773,13 +784,20 @@ class Grasp(XArmUtilsWrapper, State):
             )
 
         # --- Step 2: Grasp ---
+        ph.apply_planning_time(self.xarm, self.pr_node, self.planning_time_default, "Grasp")
+        ph.apply_start_state(self.xarm, self.pr_node, simulate_only, start_joint_values, "Grasp")
         self.xarm.set_joint_value_target(goal_joint_values)
-        success, plan, _, _ = self.xarm.plan()
+        success, plan, _plan_sec, _plan_err = self.xarm.plan()
+        _err_val = int(getattr(_plan_err, "val", 0) or 0)
+        tr.record_event(self.pr_node, "plan", skill="Grasp", success=bool(success), error_code=_err_val,
+                        planning_sec=round(float(_plan_sec or 0.0), 3), attempt=self.try_count + 1)
         if success:
             if simulate_only:
                 self.pr_node.get_logger().info(f"[Grasp] Storing pre-planned trajectory for {skill_key}.")
                 self._publish_display_trajectory(plan)
                 self.pr_node._pre_planned_trajectories[skill_key] = plan
+                if plan is not None and plan.points:
+                    ph.set_sim_end_joints(self._current_blackboard, plan.points[-1].positions)
                 if self._current_blackboard is not None:
                     setattr(self._current_blackboard, 'grasp_trajectory', deepcopy(plan))
                     self.pr_node.get_logger().info(
@@ -791,6 +809,7 @@ class Grasp(XArmUtilsWrapper, State):
             exec_success = self.xarm.execute()
             if not exec_success:
                 self.pr_node.get_logger().error("Execution failed.")
+                tr.record_stop(self.pr_node, "EXEC", "execution_failed", "Grasp")
                 return "except"
             self.pr_node.get_logger().info("Execution succeeded.")
             # Blackboardに軌道を保存
@@ -815,6 +834,8 @@ class Grasp(XArmUtilsWrapper, State):
                     f"(max_retries_default={self.max_retries_default}). Aborting Grasp skill."
                 )
                 self.try_count = 0
+                tr.record_stop(self.pr_node, "E-col", "planning",
+                               f"Grasp: no valid plan after retries (last MoveIt error_code={_err_val})")
                 return "except"
             self.pr_node.get_logger().warn(
                 f"No valid plan found, retrying... (attempt {self.try_count}/{self.max_retries_default})"
