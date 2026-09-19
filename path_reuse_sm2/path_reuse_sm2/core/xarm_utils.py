@@ -12,6 +12,31 @@ from sensor_msgs.msg import JointState
 from geometry_msgs.msg import PoseStamped
 from typing import Any, List, Optional
 from xarm_utils_py import XArmUtils, Node
+import threading
+
+
+# xArm6 の関節名（joint1..joint6）
+XARM6_JOINT_NAMES = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
+
+
+def _call_service(client, request, timeout_sec: float):
+    """サービスを呼び、**ノードを spin せずに**応答を待つ。
+
+    ``rclpy.spin_until_future_complete(node, ...)`` はノードをグローバル executor にも
+    登録して回すため、PRSM ノードが既に動いている MultiThreadedExecutor と二重所有に
+    なる。ロボアプリ版の実測（2026-08-25）では 2 タスク目以降の ``/prsm_task_set`` が
+    コールバックに届かなくなった。future の done コールバックで ``threading.Event`` を
+    立てて待てば、応答は既に動いている executor のスレッドで配送され、ノードの
+    再登録は起きない。応答が来なければ None。
+    （ロボアプリ版 nex10_utils.py:29-61 からの移植）
+    """
+    future = client.call_async(request)
+    done = threading.Event()
+    future.add_done_callback(lambda _f: done.set())
+    if not done.wait(timeout_sec):
+        future.cancel()
+        return None
+    return future.result()
 
 
 class XArmUtilsWrapper:
@@ -170,14 +195,56 @@ class XArmRobotUtils:
             )
             return None
 
-    def compute_ik(self, pose, seed_joints: Optional[List[float]] = None):
+    def _param(self, name, default):
+        """ノードのパラメータを読む。未宣言なら default。"""
+        try:
+            value = self.node.get_parameter(name).value
+        except Exception:
+            return default
+        return default if value is None else value
+
+    def _avoid_collisions_default(self) -> bool:
+        """IK に衝突回避を要求するか（パラメータ ik_avoid_collisions、未宣言なら True）。"""
+        return bool(self._param("ik_avoid_collisions", True))
+
+    def _base_z_override(self):
+        """IK 目標の base 系 z を固定値で上書きするか（パラメータ ik_base_z_override）。
+
+        負の値なら上書きしない。既定 0.125 は研究版が決め打ちしていた値で、
+        従来挙動を保つために既定として残している。実験構成では -1.0 にして
+        検出／KB の高さをそのまま使う。
+        """
+        v = self._param("ik_base_z_override", 0.125)
+        try:
+            v = float(v)
+        except Exception:
+            return None
+        return None if v < 0.0 else v
+
+    def compute_ik(
+        self,
+        pose,
+        seed_joints: Optional[List[float]] = None,
+        avoid_collisions: Optional[bool] = None,
+        fallback_to_collision: bool = True,
+    ):
+        """IK を解く。
+
+        ``avoid_collisions`` が真（既定はパラメータ ``ik_avoid_collisions``）なら
+        planning scene と干渉しない解だけを受け付ける。干渉しない解が無いとき、
+        ``fallback_to_collision=False`` なら None を返し（干渉解に落とさない。呼び手が
+        別の姿勢を試すためのモード）、True なら理由を WARN に残してから衝突を許して
+        解き直す。
+        （ロボアプリ版 nex10_utils.py:263-353 からの移植）
+        """
         target = self.pose_to_pose_stamped(pose)
         target = self._transform_pose_to_base(target)
         if target is None:
             return None
-        
-        # baseのz座標は決め打ち
-        target.pose.position.z = 0.125
+
+        z_override = self._base_z_override()
+        if z_override is not None:
+            target.pose.position.z = z_override
 
         if self._ik_cli is None:
             self._ik_cli = self.node.create_client(GetPositionIK, self.ik_service)
@@ -186,29 +253,54 @@ class XArmRobotUtils:
             self.node.get_logger().error(f"[XArmRobotUtils] IK service not available: {self.ik_service}")
             return None
 
-        req = GetPositionIK.Request()
-        req.ik_request.group_name = self.move_group
-        req.ik_request.ik_link_name = self.ee_link
-        req.ik_request.pose_stamped = target
-        req.ik_request.timeout = DurationMsg(sec=1, nanosec=0)
-        req.ik_request.avoid_collisions = False
+        def ask(avoid: bool):
+            req = GetPositionIK.Request()
+            req.ik_request.group_name = self.move_group
+            req.ik_request.ik_link_name = self.ee_link
+            req.ik_request.pose_stamped = target
+            req.ik_request.timeout = DurationMsg(sec=1, nanosec=0)
+            req.ik_request.avoid_collisions = bool(avoid)
 
-        # seed_joints をセットすると姿勢の初期ジョイントがセットできる
-        if seed_joints is not None and len(seed_joints) >= 6:
-            js = JointState()
-            js.name = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
-            js.position = [float(v) for v in seed_joints[:6]]
-            rs = RobotState()
-            rs.joint_state = js
-            req.ik_request.robot_state = rs
+            # seed_joints をセットすると姿勢の初期ジョイントがセットできる
+            if seed_joints is not None and len(seed_joints) >= 6:
+                js = JointState()
+                js.name = list(XARM6_JOINT_NAMES)
+                js.position = [float(v) for v in seed_joints[:6]]
+                rs = RobotState()
+                rs.joint_state = js
+                # is_diff=False だと move_group が attach 物体を捨てて解く
+                # （conversions.cpp の clearAttachedBodies）。掴んだ物込みで判定させる
+                rs.is_diff = True
+                req.ik_request.robot_state = rs
 
-        future = self._ik_cli.call_async(req)
-        rclpy.spin_until_future_complete(self.node, future, timeout_sec=2.0)
-        res = future.result()
+            return _call_service(self._ik_cli, req, timeout_sec=2.0)
 
+        want_avoid = self._avoid_collisions_default() if avoid_collisions is None else bool(avoid_collisions)
+
+        res = ask(want_avoid)
         if res is None:
             self.node.get_logger().error("[XArmRobotUtils] IK service call failed")
             return None
+
+        if res.error_code.val != res.error_code.SUCCESS and want_avoid and not fallback_to_collision:
+            self.node.get_logger().warn(
+                f"[XArmRobotUtils] 衝突しない IK 解が無い (error_code={res.error_code.val})。"
+                "fallback_to_collision=False なので None を返す"
+            )
+            return None
+
+        if res.error_code.val != res.error_code.SUCCESS and want_avoid:
+            # 衝突しない姿勢が無い。黙って衝突する解に落ちると原因がログから読み取れなく
+            # なるので、理由を残してから解き直す。IK が見るシーンとプランナが見るシーンは
+            # 同じとは限らないため、この警告が出ても計画は通ることがある。
+            self.node.get_logger().warn(
+                f"[XArmRobotUtils] 衝突しない IK 解が無い (error_code={res.error_code.val})。"
+                "衝突を許して解き直す。返る姿勢は障害物か自分自身と干渉している可能性がある"
+            )
+            res = ask(False)
+            if res is None:
+                self.node.get_logger().error("[XArmRobotUtils] IK service call failed")
+                return None
 
         if res.error_code.val != res.error_code.SUCCESS:
             self.node.get_logger().error(f"[XArmRobotUtils] IK failed, error_code={res.error_code.val}")
@@ -218,9 +310,48 @@ class XArmRobotUtils:
         self.node.get_logger().info(f"[XArmRobotUtils] IK joints: {joints}")
         return joints
 
+    def _read_fresh_joint_state(self, timeout_sec: float = 1.0):
+        """/joint_states を使い捨てノードで 1 通だけ読む。
+
+        move_group interface 経由の現在値は spin 枯渇で古い値を返すことがある
+        （ロボアプリ版の実測 2026-08-28: 前タスクの把持姿勢が返り、承認後の実行が
+        Invalid Trajectory: start point deviates で止まった）。使い捨てノード＋
+        自前 executor なので既存ノードの spin とは衝突しない。
+        （ロボアプリ版 nex10_utils.py:355-389 からの移植）
+        """
+        import os as _os
+        import time as _time
+        from rclpy.executors import SingleThreadedExecutor as _STE
+        name = f"xarm_js_probe_{_os.getpid()}_{_time.monotonic_ns()}"
+        try:
+            probe = rclpy.create_node(name)
+        except Exception:
+            return None
+        got = {}
+        probe.create_subscription(JointState, "/joint_states", lambda m: got.setdefault("msg", m), 10)
+        ex = _STE()
+        ex.add_node(probe)
+        try:
+            deadline = _time.monotonic() + timeout_sec
+            while "msg" not in got and _time.monotonic() < deadline:
+                ex.spin_once(timeout_sec=0.1)
+        finally:
+            ex.remove_node(probe)
+            probe.destroy_node()
+        msg = got.get("msg")
+        if msg is None:
+            return None
+        by_name = dict(zip(msg.name, msg.position))
+        if not all(k in by_name for k in XARM6_JOINT_NAMES):
+            return None
+        return [float(by_name[k]) for k in XARM6_JOINT_NAMES]
+
     def get_current_joint_values(self):
         # TODO(real-robot): replace fallback behavior with actual current joint acquisition.
         # In fake MoveIt, current_state can be empty or timestamp 0, so returning None is expected.
+        fresh = self._read_fresh_joint_state()
+        if fresh is not None:
+            return fresh
         candidates = []
 
         if self.xarm is not None:
