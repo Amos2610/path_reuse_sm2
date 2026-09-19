@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import math
 import os
 import time
 from copy import deepcopy
@@ -11,6 +12,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from path_reuse_method.path_seed_client import PathSeedClient
 from path_reuse_sm2.core.xarm_utils import XArmUtilsWrapper, XArmRobotUtils
 from path_reuse_sm2.core.path_registry import PathRegistry
+from path_reuse_sm2.core.grasp_orientation import approach_from_orientation, rotate_about_approach
 
 
 class Grasp(XArmUtilsWrapper, State):
@@ -66,6 +68,9 @@ class Grasp(XArmUtilsWrapper, State):
         _down = [1.0, 0.0, 0.0, 0.0]
         self.pre_grasp_orientation = kwargs.get("pre_grasp_orientation", _down)
         self.grasp_orientation = kwargs.get("grasp_orientation", _down)
+        self._down_orientation = list(_down)
+        # 接近方向（ベースフレーム）。姿勢から都度導くので None のまま
+        self._approach_base = None
         self._tf_broadcaster = TransformBroadcaster(self.pr_node)
 
         # variables
@@ -98,12 +103,56 @@ class Grasp(XArmUtilsWrapper, State):
                 return os.path.dirname(os.path.dirname(first_path))
             return os.getcwd()
 
+    def _param_list(self, name, default):
+        """ノードのパラメータ（数値の配列）を読む。未宣言なら default。"""
+        try:
+            v = self.pr_node.get_parameter(name).value
+        except Exception:
+            return list(default)
+        if v is None:
+            return list(default)
+        try:
+            return [float(x) for x in v]
+        except TypeError:
+            return [float(v)]
+
+    def _yaw_search_deg(self):
+        """接近軸まわりに振る角度[deg]の列（パラメータ grasp_yaw_search_deg）。
+
+        平行グリッパでは 180 度以外は把持方向が変わるので、既定は 180 度だけ。
+        対称な物体で広げるときはパラメータで指定する。
+        """
+        return [d for d in self._param_list("grasp_yaw_search_deg", [180.0]) if abs(d) > 1e-6]
+
+    def _shift_search_m(self):
+        """把持位置を水平にずらす量[m]の列（パラメータ grasp_shift_search_m）。
+
+        物体の形状情報が無いので範囲の制約は掛けられず、平行グリッパでは把持点を
+        ずらすと掴めなくなる。既定は空（無効）。
+        """
+        return [d for d in self._param_list("grasp_shift_search_m", [0.0]) if d > 1e-6]
+
     def _offset_pose_along_approach(self, pose_stamped, offset_m: float):
-        """link_base座標系のZ軸上方にoffset_mだけ離れたpre_graspを計算する（上方向把持用）。
+        """接近方向の手前 offset_m に pre-grasp を置く（ベースフレーム）。
+
+        link_base の +Z に足すだけだと、姿勢を斜めにしたとき pre-grasp が接近直線から
+        外れる。いま使う姿勢から接近方向（TCP 局所 +Z）を取り、その逆へ下がる。
+        真下固定 [1, 0, 0, 0] では接近方向が (0, 0, -1) なので +Z へ offset_m 上がる。
         self.pre_grasp_orientation が設定されている場合はそのorientationで上書きする。
         """
         pre_grasp = deepcopy(pose_stamped)
-        pre_grasp.pose.position.z += offset_m
+        approach = (
+            approach_from_orientation(self.pre_grasp_orientation)
+            if self.pre_grasp_orientation is not None
+            else None
+        )
+        if approach is None:
+            # 姿勢が無い・壊れているときだけ、旧来の真上固定に落とす。
+            pre_grasp.pose.position.z += offset_m
+        else:
+            pre_grasp.pose.position.x -= approach[0] * offset_m
+            pre_grasp.pose.position.y -= approach[1] * offset_m
+            pre_grasp.pose.position.z -= approach[2] * offset_m
         if self.pre_grasp_orientation is not None:
             q = self.pre_grasp_orientation
             pre_grasp.pose.orientation.x = float(q[0])
@@ -111,6 +160,137 @@ class Grasp(XArmUtilsWrapper, State):
             pre_grasp.pose.orientation.z = float(q[2])
             pre_grasp.pose.orientation.w = float(q[3])
         return pre_grasp
+
+    def _rescue_pre_grasp(self, grasp_pose_base, seed_joints):
+        """pre-grasp の IK が解けないときに、接近軸まわりに回して解ける姿勢を探す。
+
+        接近方向は変えず、腕の姿勢だけ別の解に移す。採用した姿勢は
+        self.grasp_orientation にも入れ、直後の把持目標の解き直しと揃える。
+        戻り値: (pre_grasp_pose_stamped, pre_grasp_joints)。全滅なら None。
+        """
+        original = list(self.pre_grasp_orientation) if self.pre_grasp_orientation is not None else None
+        if original is None:
+            return None
+        approach = approach_from_orientation(original)
+        if approach is None:
+            return None
+
+        def _try(orientation, label):
+            self.pre_grasp_orientation = orientation
+            pose = self._offset_pose_along_approach(grasp_pose_base, self.pre_grasp_offset)
+            joints = self.robot_utils.normalize_joint_list(
+                self.robot_utils.compute_ik(pose, seed_joints=seed_joints)
+            )
+            if joints is None:
+                return None
+            self.grasp_orientation = orientation
+            self.pr_node.get_logger().warn(
+                f"[Grasp] 元の姿勢では pre-grasp の IK が解けないので{label}。"
+                f"quat={[round(v, 4) for v in orientation]}"
+            )
+            return pose, joints
+
+        degs = self._yaw_search_deg()
+        for deg in degs:
+            rotated = rotate_about_approach(original, approach, math.radians(deg))
+            if rotated is None:
+                break
+            found = _try(rotated, f"接近軸まわりに {deg:g} 度回した")
+            if found is not None:
+                return found
+        self.pr_node.get_logger().warn(
+            f"[Grasp] 接近軸まわりに {len(degs)} 通り振ったがどれも pre-grasp の IK が解けなかった"
+        )
+        self.pre_grasp_orientation = original
+        return None
+
+    def _solve_grasp_goal_collision_free(self, grasp_pose_oriented, pre_grasp_joints):
+        """把持目標を**干渉しない**姿勢で解く。
+
+        目標そのものが planning scene と干渉していると STOMP は何回やっても通らない。
+        順に試す: 1. そのまま  2. 接近軸まわりの yaw（grasp_yaw_search_deg）
+        3. 把持位置を水平にずらす（grasp_shift_search_m、既定は無効）。
+        戻り値: (goal_joints, (pre_grasp_pose, pre_grasp_joints) or None, shifted_grasp_pose or None)。
+        全部干渉するなら (None, None, None) で、呼び手が干渉解に落とす。
+        """
+        o = grasp_pose_oriented.pose.orientation
+        base_q = [o.x, o.y, o.z, o.w]
+        approach = approach_from_orientation(base_q)  # 真下把持なら (0, 0, -1)
+
+        orientations = [(0.0, base_q)]
+        if approach is not None:
+            for deg in self._yaw_search_deg():
+                q = rotate_about_approach(base_q, approach, math.radians(deg))
+                if q is None:
+                    break
+                orientations.append((deg, q))
+
+        def _ik(pose):
+            return self.robot_utils.normalize_joint_list(
+                self.robot_utils.compute_ik(
+                    pose, seed_joints=pre_grasp_joints,
+                    avoid_collisions=True, fallback_to_collision=False,
+                )
+            )
+
+        def _with(pose, q, dx, dy):
+            p = deepcopy(pose)
+            p.pose.position.x += dx
+            p.pose.position.y += dy
+            p.pose.orientation.x = float(q[0])
+            p.pose.orientation.y = float(q[1])
+            p.pose.orientation.z = float(q[2])
+            p.pose.orientation.w = float(q[3])
+            return p
+
+        # 1, 2: 位置はそのまま、姿勢だけ
+        for deg, q in orientations:
+            joints = _ik(_with(grasp_pose_oriented, q, 0.0, 0.0))
+            if joints is None:
+                continue
+            if deg == 0.0:
+                return joints, None, None
+            self.pr_node.get_logger().warn(
+                f"[Grasp] 把持目標が干渉するので接近軸まわりに {deg:g} 度回した。"
+                f"quat={[round(v, 4) for v in q]}"
+            )
+            return joints, self._realign_pre_grasp(grasp_pose_oriented, q, joints), None
+
+        # 3: 水平にずらす（パラメータで有効化したときだけ）
+        shifts = []
+        for d in self._shift_search_m():
+            shifts.extend([(d, 0.0), (-d, 0.0), (0.0, d), (0.0, -d)])
+        for dx, dy in shifts:
+            for deg, q in orientations:
+                pose = _with(grasp_pose_oriented, q, dx, dy)
+                joints = _ik(pose)
+                if joints is None:
+                    continue
+                self.pr_node.get_logger().warn(
+                    f"[Grasp] 把持目標が干渉するので把持位置を base で ({dx:+.2f}, {dy:+.2f}) m ずらした"
+                    + (f"（yaw {deg:g} 度）" if deg else "")
+                )
+                return joints, self._realign_pre_grasp(pose, q, joints), pose
+
+        self.pr_node.get_logger().warn(
+            f"[Grasp] 把持目標は yaw {len(orientations)} 通り・ずらし {len(shifts)} 通りのどれでも干渉する。干渉解で続ける"
+        )
+        return None, None, None
+
+    def _realign_pre_grasp(self, grasp_pose, q, goal_joints):
+        """採用した把持姿勢に pre-grasp を揃える。解けなければ None（呼び手は元のまま）。"""
+        self.grasp_orientation = list(q)
+        self.pre_grasp_orientation = list(q)
+        pre_pose = self._offset_pose_along_approach(deepcopy(grasp_pose), self.pre_grasp_offset)
+        pre_joints = self.robot_utils.normalize_joint_list(
+            self.robot_utils.compute_ik(pre_pose, seed_joints=goal_joints)
+        )
+        if pre_joints is None:
+            self.pr_node.get_logger().warn(
+                "[Grasp] 直した姿勢では pre-grasp の IK が解けない。pre-grasp は元のまま"
+            )
+            return None
+        return pre_pose, pre_joints
 
     def _publish_grasp_tfs(self, grasp_ps, pre_grasp_ps=None):
         """grasp, pre_graspをTFフレームとして配信する（RViz可視化用）。"""
@@ -467,6 +647,10 @@ class Grasp(XArmUtilsWrapper, State):
                 raw = self.robot_utils.compute_ik(pre_grasp_pose_base, seed_joints=goal_joint_values)
                 pre_grasp_joints = self.robot_utils.normalize_joint_list(raw)
                 if pre_grasp_joints is None:
+                    rescued = self._rescue_pre_grasp(grasp_pose_base, goal_joint_values)
+                    if rescued is not None:
+                        pre_grasp_pose_base, pre_grasp_joints = rescued
+                if pre_grasp_joints is None:
                     self.pr_node.get_logger().warn(
                         "[Grasp] Pre-grasp IK failed, will skip pre-grasp step."
                     )
@@ -483,11 +667,19 @@ class Grasp(XArmUtilsWrapper, State):
                         grasp_pose_base_oriented.pose.orientation.y = float(q[1])
                         grasp_pose_base_oriented.pose.orientation.z = float(q[2])
                         grasp_pose_base_oriented.pose.orientation.w = float(q[3])
-                    refined = self.robot_utils.normalize_joint_list(
-                        self.robot_utils.compute_ik(
-                            grasp_pose_base_oriented, seed_joints=pre_grasp_joints
-                        )
+                    refined, rescued_pre, shifted = self._solve_grasp_goal_collision_free(
+                        grasp_pose_base_oriented, pre_grasp_joints
                     )
+                    if rescued_pre is not None:
+                        pre_grasp_pose_base, pre_grasp_joints = rescued_pre
+                    if shifted is not None:
+                        grasp_pose_base = shifted
+                    if refined is None:
+                        refined = self.robot_utils.normalize_joint_list(
+                            self.robot_utils.compute_ik(
+                                grasp_pose_base_oriented, seed_joints=pre_grasp_joints
+                            )
+                        )
                     if refined is not None:
                         goal_joint_values = refined
                         self.pr_node.get_logger().info(
