@@ -1,8 +1,7 @@
 """計画の前後処理（計画時間・開始状態・simulate の終端）の共通ヘルパ。
 
-ロボアプリ版 grasp.py の _apply_planning_time / _apply_start_state（440a92b :154-167, 846-866）と
-sm_node_with_rag.py の get_sim_start_joints / set_sim_end_joints（:410-415）を、研究版では
-Blackboard（TaskSet ごとに新規作成）に持たせる形にまとめたもの。
+simulate で計画した軌道の終端は Blackboard（TaskSet ごとに新規作成）に持たせ、
+次のスキルの開始状態にする。
 """
 
 SIM_END_KEY = "sim_end_joints"
