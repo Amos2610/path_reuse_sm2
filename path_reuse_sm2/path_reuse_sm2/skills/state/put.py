@@ -14,6 +14,7 @@ from path_reuse_sm2.core.xarm_utils import XArmUtilsWrapper, XArmRobotUtils
 from path_reuse_sm2.core.path_registry import PathRegistry
 from path_reuse_sm2.core.grasp_orientation import approach_from_orientation, rotate_about_approach
 from path_reuse_sm2.core import plan_helpers as ph
+from path_reuse_sm2.core import trial_record as tr
 import os
 
 
@@ -191,8 +192,11 @@ class Put(XArmUtilsWrapper, State):
             pr_client = self._ensure_path_seed_client()
             self.pr_node.get_logger().info("[Put] Decoding pathseed via PathSeedClient...")
             decoded_path = pr_client.send_decode_path_seed(file_path, start_joint_values, goal_joint_values)
-            if decoded_path is None:
-                self.pr_node.get_logger().error("[Put] decode failed: None returned.")
+            rows = int(getattr(decoded_path, "rows", 0) or 0) if decoded_path is not None else 0
+            tr.record_event(self.pr_node, "seed", skill="Put", path=str(file_path), rows=rows)
+            if decoded_path is None or rows == 0:
+                self.pr_node.get_logger().error(f"[Put] decode failed: {'None returned' if decoded_path is None else 'empty seed (rows=0)'}: {file_path}")
+                tr.record_stop(self.pr_node, "E-seed", "seed_decode", f"{file_path}")
                 return False
             self.pr_node.get_logger().info("[Put] Setting decoded pathseed...")
             pr_client.send_set_path_seed(decoded_path)
@@ -298,6 +302,7 @@ class Put(XArmUtilsWrapper, State):
         self.pr_node.get_logger().warn(
             f"[Put] 置き姿勢は yaw {len(candidates)} 通りのどれでも干渉しない解が無い。干渉解で続ける"
         )
+        tr.record_event(self.pr_node, "ik_search_exhausted", skill="Put", yaw=len(candidates))
         goal = _solve(place_ps, "干渉を許容", fallback=True)
         if goal:
             return goal
@@ -428,6 +433,7 @@ class Put(XArmUtilsWrapper, State):
         joint_values = self.set_start_and_goal_joint_values(blackboard)
         if joint_values is None:
             self.pr_node.get_logger().error("Failed to set start/goal joint values.")
+            tr.record_stop(self.pr_node, "E-ik", "ik_goal", "Put: start/goal joint values unresolved")
             return "except"
 
         start_joint_values, goal_joint_values = joint_values
@@ -477,6 +483,7 @@ class Put(XArmUtilsWrapper, State):
             )
             if not success_generated:
                 self.pr_node.get_logger().error("Failed to generate STOMP path from PathSeed.")
+                tr.record_stop(self.pr_node, "E-seed", "seed_decode", "Put")
                 return "except"
         else:
             try:
@@ -490,7 +497,10 @@ class Put(XArmUtilsWrapper, State):
 
         self.xarm.set_joint_value_target(goal_joint_values)
 
-        success, plan, _, _ = self.xarm.plan()
+        success, plan, _plan_sec, _plan_err = self.xarm.plan()
+        _err_val = int(getattr(_plan_err, "val", 0) or 0)
+        tr.record_event(self.pr_node, "plan", skill="Put", success=bool(success), error_code=_err_val,
+                        planning_sec=round(float(_plan_sec or 0.0), 3), attempt=self.try_count + 1)
         if success:
             if simulate_only:
                 self.pr_node.get_logger().info(f"[Put] Storing pre-planned trajectory for {skill_key}.")
@@ -506,6 +516,7 @@ class Put(XArmUtilsWrapper, State):
             exec_success = self.xarm.execute()
             if not exec_success:
                 self.pr_node.get_logger().error("Execution failed.")
+                tr.record_stop(self.pr_node, "EXEC", "execution_failed", "Put")
                 return "except"
             self.pr_node.get_logger().info("Execution succeeded.")
             if self._current_blackboard is not None:
@@ -526,6 +537,8 @@ class Put(XArmUtilsWrapper, State):
                     f"(max_retries_default={self.max_retries_default}). Aborting Put skill."
                 )
                 self.try_count = 0
+                tr.record_stop(self.pr_node, "E-col", "planning",
+                               f"Put: no valid plan after retries (last MoveIt error_code={_err_val})")
                 return "except"
             self.pr_node.get_logger().warn(
                 f"No valid plan found, retrying... (attempt {self.try_count}/{self.max_retries_default})"
