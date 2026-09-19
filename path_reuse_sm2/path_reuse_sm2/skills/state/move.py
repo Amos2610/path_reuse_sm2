@@ -6,6 +6,7 @@ from typing import Any, Dict
 from yasmin.state import State
 from path_reuse_sm2.core.xarm_utils import XArmUtilsWrapper
 from path_reuse_sm2.core import plan_helpers as ph
+from path_reuse_sm2.core import trial_record as tr
 
 
 class Move(State):
@@ -82,6 +83,7 @@ class Move(State):
                     exec_success = self.xarm.execute_with_plan(pre_plan)
                     if not exec_success:
                         self.pr_node.get_logger().error("[Move] Pre-planned execution failed.")
+                        tr.record_stop(self.pr_node, "EXEC", "execution_failed", "Move: pre-planned")
                         return "except"
                     if blackboard is not None:
                         setattr(blackboard, "move_joints", list(pre_plan.points[-1].positions) if pre_plan.points else [])
@@ -114,6 +116,12 @@ class Move(State):
             result = self.xarm.plan()
             success = result[0] if isinstance(result, (list, tuple)) and len(result) >= 1 else False
             plan = result[1] if isinstance(result, (list, tuple)) and len(result) >= 2 else None
+            _plan_sec = result[2] if isinstance(result, (list, tuple)) and len(result) >= 3 else 0.0
+            _plan_err = result[3] if isinstance(result, (list, tuple)) and len(result) >= 4 else None
+            self._last_plan_error = int(getattr(_plan_err, "val", 0) or 0)
+            tr.record_event(self.pr_node, "plan", skill="Move", success=bool(success),
+                            error_code=self._last_plan_error, planning_sec=round(float(_plan_sec or 0.0), 3),
+                            attempt=self.try_count + 1)
         except Exception as e:
             self.pr_node.get_logger().error(f"[Move] Motion planning failed (is move_group running?): {e}")
             return "except"
@@ -157,6 +165,11 @@ class Move(State):
                 f"[Move] {reason} after {self.try_count} attempts. Aborting skill."
             )
             self.try_count = 0
+            if reason.startswith("planning"):
+                tr.record_stop(self.pr_node, "E-col", "planning",
+                               f"Move: {reason} after retries (last MoveIt error_code={getattr(self, '_last_plan_error', 0)})")
+            else:
+                tr.record_stop(self.pr_node, "EXEC", "execution_failed", f"Move: {reason} after retries")
             return "except"
         self.pr_node.get_logger().warn(
             f"[Move] {reason} ({self.try_count}/{self.max_retries_default}), retrying..."

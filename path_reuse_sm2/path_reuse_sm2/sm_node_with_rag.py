@@ -10,6 +10,7 @@ TaskSet サービスで受け取った Skill[] から flow と StateMachine を�
 各スキルの実行状況をリアルタイムに取得可能。
 """
 
+import os
 import threading
 from typing import Any, Dict, List
 
@@ -31,6 +32,7 @@ from yasmin_ros.basic_outcomes import SUCCEED, ABORT, CANCEL
 from moveit_msgs.msg import DisplayTrajectory, RobotTrajectory
 
 from path_reuse_sm2.core.plugin import discover, get, names, failures
+from path_reuse_sm2.core.trial_record import TrialRecord
 from path_reuse_sm2.skills.skill_standard import SkillStart, SkillRAGBridge
 
 
@@ -94,7 +96,13 @@ class MonitoredSkillState(State):
         )
 
         # --- 実行 ---
+        import time as _time
+        _t0 = _time.monotonic()
         outcome = self._inner.execute(blackboard)
+        trial = getattr(self._node, "_trial", None)
+        if trial is not None:
+            trial.event("skill", name=self._skill_name, index=self._skill_index,
+                        outcome=str(outcome), duration_sec=round(_time.monotonic() - _t0, 3))
 
         # --- 実行後: 結果をログ ---
         self._node.get_logger().info(
@@ -191,6 +199,8 @@ class PRSMNode(Node):
         # planning_time_*: MoveGroupInterface の計画時間[s]（MotionPlanRequest のフィールド）
         self.declare_parameter("planning_time_grasp", 5.0)
         self.declare_parameter("planning_time_put", 5.0)
+        # prsm_trial_log_dir: 試行記録（停止段階・検査名）の JSON 出力先。空なら ~/.ros/prsm_trials
+        self.declare_parameter("prsm_trial_log_dir", "")
 
         # --- 監視用パラメータ ---
         # 実行監視ノードがポーリングして、ロボットの現在状態を把握するためのパラメータ群
@@ -230,6 +240,9 @@ class PRSMNode(Node):
             "prsm_error_message": self.get_parameter("prsm_error_message").value,
         }
         current_status.update(kwargs)
+        trial = getattr(self, "_trial", None)
+        if trial is not None:
+            current_status.update(trial.summary())
         
         if hasattr(self, '_monitor_pub'):
             msg = String(data=json.dumps(current_status))
@@ -238,8 +251,31 @@ class PRSMNode(Node):
     # -------------------------
     # TaskSet サービスコールバック
     # -------------------------
+    def _trial_finish(self, outcome: str) -> None:
+        """試行記録を閉じて JSON に書き、監視トピックに要約を流す。"""
+        trial = getattr(self, "_trial", None)
+        if trial is None:
+            return
+        trial.finish(outcome)
+        log_dir = self.get_parameter("prsm_trial_log_dir").value or os.path.expanduser("~/.ros/prsm_trials")
+        try:
+            path = trial.write(log_dir)
+            self.get_logger().info(
+                f"[PRSM][trial] {trial.trial_id} stage={trial.stage} check={trial.check} "
+                f"detail={trial.detail!r} -> {path}"
+            )
+        except Exception as e:  # noqa: BLE001 - 記録の失敗で実行を止めない
+            self.get_logger().warn(f"[PRSM][trial] failed to write trial record: {e}")
+        self._update_monitoring_params()
+
     def _task_set_callback(self, request: TaskSet.Request, response: TaskSet.Response):
         self.get_logger().info(f"[PRSM] Raw skills received: {len(request.task.skills)} items")
+        self._trial = TrialRecord(
+            simulate_only=bool(request.task.simulate_only),
+            skills=[{"skill_name": s.skill_name, "source_location": s.source_location,
+                     "target_location": s.target_location, "workpiece": s.workpiece,
+                     "path_seed_path": s.path_seed_path} for s in request.task.skills],
+        )
         for i, s in enumerate(request.task.skills):
             self.get_logger().info(
                 f"[PRSM] skills[{i}]: skill_name={repr(s.skill_name)} "
@@ -256,11 +292,13 @@ class PRSMNode(Node):
             response.accepted = False
             response.message = f"Unknown skill(s): {unknown}"
             self.get_logger().error(response.message)
+            self._trial.stop("E-accept", "unknown_skill", response.message)
             # 監視パラメータ: エラー状態
             self._update_monitoring_params(
                 prsm_status="failed",
                 prsm_error_message=response.message,
             )
+            self._trial_finish("rejected")
             return response
 
         task: TaskInfo = request.task
@@ -275,10 +313,12 @@ class PRSMNode(Node):
             self.get_logger().warn("[PRSM] Received empty task.")
             response.accepted = False
             response.message = "Empty task."
+            self._trial.stop("E-accept", "empty_task", response.message)
             self._update_monitoring_params(
                 prsm_status="failed",
                 prsm_error_message=response.message,
             )
+            self._trial_finish("rejected")
             return response
 
         self.get_logger().info("[PRSM] 📥 Received TaskSet Request")
@@ -330,10 +370,12 @@ class PRSMNode(Node):
         except RuntimeError as e:
             response.accepted = False
             response.message = str(e)
+            self._trial.stop("E-accept", "skill_registry", response.message)
             self._update_monitoring_params(
                 prsm_status="failed",
                 prsm_error_message=response.message,
             )
+            self._trial_finish("rejected")
             return response
         self.get_logger().info("[PRSM] State machine built.")
 
@@ -374,6 +416,7 @@ class PRSMNode(Node):
 
             response.accepted = True
             response.message = f"Task executed with outcome={outcome}"
+            self._trial_finish(str(outcome))
         except Exception as e:
             self.get_logger().error(f"[PRSM] Execution error: {e}")
             self._update_monitoring_params(
@@ -381,6 +424,8 @@ class PRSMNode(Node):
                 prsm_outcome="abort",
                 prsm_error_message=str(e),
             )
+            self._trial.stop("E-abort", "exception", str(e))
+            self._trial_finish("abort")
             response.accepted = False
             response.message = f"Execution error: {e}"
 
