@@ -55,7 +55,7 @@ class UpdatePathSeed(State):
             f"UpdatePathSeed state executed."
         )
         # simulate_only では実行していない計画を seed として書き戻さない。
-        # 併せて phase の Implement_Phase への遷移も抑止する（ロボアプリ版 :50-54）。
+        # 併せて phase の Implement_Phase への遷移も抑止する。
         if self.pr_node.get_parameter("prsm_simulate_only").value:
             self.pr_node.get_logger().info(
                 "[UpdatePathSeed] simulate_only: skip seed encoding / registry update / phase flip."

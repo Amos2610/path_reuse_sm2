@@ -60,8 +60,7 @@ class Move(State):
                 # 事前計画軌道はシミュレーション時の開始姿勢から作られている。承認までの
                 # 間に腕が動いていると、MoveIt の開始点検証（allowed_start_tolerance）が
                 # 実行を弾いて abort になる。弾かれてから諦めるのではなく、ずれを先に
-                # 検知したら事前計画を捨てて現在姿勢から計画し直す
-                # （ロボアプリ版 move.py:82-114、実測 2026-09-01: 1.9 rad ずれて連続 abort）。
+                # 検知したら事前計画を捨てて現在姿勢から計画し直す。
                 stale = False
                 try:
                     current = list(self.xarm.get_current_joint_values() or [])
@@ -157,8 +156,7 @@ class Move(State):
             return self._retry_or_abort("planning failed")
 
     def _retry_or_abort(self, reason: str) -> str:
-        """"loop" は skill_move.py で MOVE へ戻るので、上限が無いと永久に返らない
-        （ロボアプリ版 move.py:174-186）。"""
+        """"loop" は skill_move.py で MOVE へ戻るので、上限が無いと永久に返らない。"""
         self.try_count += 1
         if self.try_count > self.max_retries_default:
             self.pr_node.get_logger().error(
