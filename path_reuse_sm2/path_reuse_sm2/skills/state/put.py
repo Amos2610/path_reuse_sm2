@@ -247,8 +247,7 @@ class Put(XArmUtilsWrapper, State):
         接近軸まわりに回す」を試し、全滅なら理由を WARN に残して干渉解を許して解く
         （目標が干渉していれば m-STOMP の衝突検査が計画を止める）。
         解けたら place_target / pre_place_target の TF に出す。
-        （ロボアプリ版 put.py:326-433 からの移植。置き候補（PlaceCandidate）は研究版に
-        無いので pose 1 つだけ。接近方向の規約は xArm6 の局所 +Z）
+        接近方向は姿勢の局所 +Z（core/grasp_orientation.py）から取る。
         """
         place_ps = self._place_pose_base()
         if place_ps is None:
