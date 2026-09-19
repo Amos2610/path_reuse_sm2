@@ -30,7 +30,7 @@ from yasmin_ros.basic_outcomes import SUCCEED, ABORT, CANCEL
 
 from moveit_msgs.msg import DisplayTrajectory, RobotTrajectory
 
-from path_reuse_sm2.core.plugin import discover, get, names
+from path_reuse_sm2.core.plugin import discover, get, names, failures
 from path_reuse_sm2.skills.skill_standard import SkillStart, SkillRAGBridge
 
 
@@ -325,7 +325,16 @@ class PRSMNode(Node):
         # 2) flow に応じてステートマシンを作り直す
         if not simulate_only:
             self._viz_traj_loop.stop()
-        self.sm = self._build_state_machine(flow)
+        try:
+            self.sm = self._build_state_machine(flow)
+        except RuntimeError as e:
+            response.accepted = False
+            response.message = str(e)
+            self._update_monitoring_params(
+                prsm_status="failed",
+                prsm_error_message=response.message,
+            )
+            return response
         self.get_logger().info("[PRSM] State machine built.")
 
         # 3) Blackboard に Skill[] と事前計画軌道を詰める
@@ -383,6 +392,10 @@ class PRSMNode(Node):
     def _discover_skills(self) -> None:
         """skills パッケージを探索し、@skill デコレータにより登録させる。"""
         discover("path_reuse_sm2.skills")
+        # import に失敗したスキルは登録されず、以前は黙って flow から飛ばされていた。
+        # 起動時に失敗を明示し、該当スキルを含むタスクは受付で拒否する（_build_state_machine）
+        for mod, err in failures().items():
+            self.get_logger().error(f"[PRSM] skill module import failed: {mod}: {err}")
         self.get_logger().info(f"[PRSM] skills discovered: {names()}")
 
     # -------------------------
@@ -448,8 +461,15 @@ class PRSMNode(Node):
             try:
                 SkillCls = get(name)
             except KeyError:
-                self.get_logger().error(f"[PRSM] skill not found: {name}")
-                continue
+                # ここに来るのは受付検査（Unknown skill）をすり抜けた場合だけ。
+                # 以前は continue で黙って飛ばし、残りのスキルだけの状態機械を作っていた
+                # （複数操作の一部が silent drop される）。受付拒否に繋げる
+                msg = (
+                    f"[PRSM] cannot build state machine: skill not registered: {name}. "
+                    f"registered={names()}, import failures={failures() or 'none'}"
+                )
+                self.get_logger().error(msg)
+                raise RuntimeError(msg)
 
             state_id = f"S{i}_{name}"
 
