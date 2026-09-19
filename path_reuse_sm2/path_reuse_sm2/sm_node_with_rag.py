@@ -186,6 +186,8 @@ class PRSMNode(Node):
         self.declare_parameter("grasp_yaw_search_deg", [180.0])
         # grasp_shift_search_m: 把持位置を水平にずらす量[m]。0 のみなら無効（既定）
         self.declare_parameter("grasp_shift_search_m", [0.0])
+        # put_yaw_search_deg: 置き姿勢が干渉するとき接近軸まわりに振る角度[deg]（既定 180 のみ）
+        self.declare_parameter("put_yaw_search_deg", [180.0])
 
         # --- 監視用パラメータ ---
         # 実行監視ノードがポーリングして、ロボットの現在状態を把握するためのパラメータ群
