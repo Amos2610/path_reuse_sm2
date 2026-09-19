@@ -1,14 +1,8 @@
-"""把持姿勢と接近方向の変換（xArm6 版）。
+"""把持姿勢と接近方向の変換。
 
-ロボアプリ版 core/grasp_orientation.py（nishida-lab-com/path_reuse_sm2 440a92b）からの
-移植。**軸の規約だけが違う**:
-
-    NEX10 の吸着 TCP (schmalz_vacuum_gripper_tcp) : 局所 -Y が吸着方向
-    xArm6 の link_tcp                              : 局所 +Z が接近方向
-
-研究版の真下固定姿勢 [1, 0, 0, 0]（X 軸まわり 180 度）は局所 +Z をワールド -Z に
-写しているので、``approach_from_orientation([1,0,0,0])`` は (0, 0, -1) を返す。
-pre-grasp を接近方向の手前に取ると、真下把持では従来の「+Z に上げる」と一致する。
+xArm6 の link_tcp は局所 +Z が接近方向。真下固定姿勢 [1, 0, 0, 0]（X 軸まわり 180 度）は
+局所 +Z をワールド -Z に写すので、``approach_from_orientation([1,0,0,0])`` は (0, 0, -1) を
+返す。pre-grasp を接近方向の手前に取ると、真下把持では「+Z に上げる」と一致する。
 """
 
 

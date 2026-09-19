@@ -120,8 +120,7 @@ class Grasp(XArmUtilsWrapper, State):
     def _yaw_search_deg(self):
         """接近軸まわりに振る角度[deg]の列（パラメータ grasp_yaw_search_deg）。
 
-        ロボアプリ版は丸い吸着パッドなので 30 度刻み 11 通りを固定で試すが、xArm6 の
-        平行グリッパでは 180 度以外は把持方向が変わる。既定は 180 度だけ。
+        平行グリッパでは 180 度以外は把持方向が変わるので、既定は 180 度だけ。
         対称な物体で広げるときはパラメータで指定する。
         """
         return [d for d in self._param_list("grasp_yaw_search_deg", [180.0]) if abs(d) > 1e-6]
@@ -129,20 +128,18 @@ class Grasp(XArmUtilsWrapper, State):
     def _shift_search_m(self):
         """把持位置を水平にずらす量[m]の列（パラメータ grasp_shift_search_m）。
 
-        ロボアプリ版は物体の上面の範囲（DetectedShape）内に限ってずらすが、研究版には
-        形状情報が無く、平行グリッパでは把持点をずらすと掴めなくなる。既定は空（無効）。
+        物体の形状情報が無いので範囲の制約は掛けられず、平行グリッパでは把持点を
+        ずらすと掴めなくなる。既定は空（無効）。
         """
         return [d for d in self._param_list("grasp_shift_search_m", [0.0]) if d > 1e-6]
 
     def _offset_pose_along_approach(self, pose_stamped, offset_m: float):
         """接近方向の手前 offset_m に pre-grasp を置く（ベースフレーム）。
 
-        以前は link_base の +Z に足すだけだった。真下把持ならそれで合っているが、
-        姿勢を斜めにすると pre-grasp が接近直線から外れる。いま使う姿勢から接近方向
-        （TCP 局所 +Z）を取り、その逆へ下がる。真下固定 [1, 0, 0, 0] では接近方向が
-        (0, 0, -1) なので +Z へ offset_m 上がり、**従来と同じ値**になる。
+        link_base の +Z に足すだけだと、姿勢を斜めにしたとき pre-grasp が接近直線から
+        外れる。いま使う姿勢から接近方向（TCP 局所 +Z）を取り、その逆へ下がる。
+        真下固定 [1, 0, 0, 0] では接近方向が (0, 0, -1) なので +Z へ offset_m 上がる。
         self.pre_grasp_orientation が設定されている場合はそのorientationで上書きする。
-        （ロボアプリ版 grasp.py:606-639 からの移植。軸の規約のみ xArm6 に変更）
         """
         pre_grasp = deepcopy(pose_stamped)
         approach = (
@@ -171,7 +168,6 @@ class Grasp(XArmUtilsWrapper, State):
         接近方向は変えず、腕の姿勢だけ別の解に移す。採用した姿勢は
         self.grasp_orientation にも入れ、直後の把持目標の解き直しと揃える。
         戻り値: (pre_grasp_pose_stamped, pre_grasp_joints)。全滅なら None。
-        （ロボアプリ版 grasp.py:427-492 からの移植。把持候補の有無に依らず適用）
         """
         original = list(self.pre_grasp_orientation) if self.pre_grasp_orientation is not None else None
         if original is None:
@@ -216,8 +212,7 @@ class Grasp(XArmUtilsWrapper, State):
         順に試す: 1. そのまま  2. 接近軸まわりの yaw（grasp_yaw_search_deg）
         3. 把持位置を水平にずらす（grasp_shift_search_m、既定は無効）。
         戻り値: (goal_joints, (pre_grasp_pose, pre_grasp_joints) or None, shifted_grasp_pose or None)。
-        全部干渉するなら (None, None, None) で、呼び手が従来どおり干渉解に落とす。
-        （ロボアプリ版 grasp.py:496-589 からの移植。上面範囲の制約は形状情報が無いので無し）
+        全部干渉するなら (None, None, None) で、呼び手が干渉解に落とす。
         """
         o = grasp_pose_oriented.pose.orientation
         base_q = [o.x, o.y, o.z, o.w]
