@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+import math
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 from yasmin.state import State
+from geometry_msgs.msg import TransformStamped
+from tf2_ros import TransformBroadcaster
 from rclpy.action import ActionServer
 from trajectory_msgs.msg import JointTrajectory
 from moveit_msgs.action import ExecuteTrajectory
 from path_reuse_method.path_seed_client import PathSeedClient
 from path_reuse_sm2.core.xarm_utils import XArmUtilsWrapper, XArmRobotUtils
 from path_reuse_sm2.core.path_registry import PathRegistry
+from path_reuse_sm2.core.grasp_orientation import approach_from_orientation, rotate_about_approach
+from path_reuse_sm2.core import plan_helpers as ph
+from path_reuse_sm2.core import trial_record as tr
 import os
 
 
@@ -36,6 +42,12 @@ class Put(XArmUtilsWrapper, State):
         self.target_location = kwargs.get("target_location", "")
         self.joints = kwargs.get("joints", [])
         self.pose = kwargs.get("pose", [])
+        self.pose_frame_id = kwargs.get("pose_frame_id", "") or "link_base"
+        # 置き姿勢を IK で解くときの設定（joints が無く pose だけ渡されたとき）
+        self.pre_place_offset = kwargs.get("pre_place_offset", 0.1)  # meters
+        # pose が位置だけ（3 要素）のときの向き。link_base 系の真下姿勢（Grasp と同じ）
+        self.place_orientation = kwargs.get("place_orientation", [1.0, 0.0, 0.0, 0.0])
+        self._tf_broadcaster = TransformBroadcaster(self.pr_node)
         self.path_seed_path = kwargs.get("path_seed_path", "")
         self.step_index = kwargs.get("step_index", 0)
 
@@ -58,6 +70,7 @@ class Put(XArmUtilsWrapper, State):
             move_group=kwargs.get("move_group", "xarm6"),
             ik_service=kwargs.get("ik_service", "/compute_ik"),
             xarm=self.xarm,
+            default_pose_frame=self.pose_frame_id,
         )
 
         # ROS1互換フィールド名
@@ -69,7 +82,7 @@ class Put(XArmUtilsWrapper, State):
         self.max_retries_default = 2
         self.max_velocity_scale_default = 0.3
         self.max_accel_scale_default = 0.3
-        self.planning_time_default = 2.0
+        self.planning_time_default = float(ph.param(self.pr_node, "planning_time_put", 5.0))
 
     def _get_workspace_root(self) -> str:
         import os
@@ -179,8 +192,11 @@ class Put(XArmUtilsWrapper, State):
             pr_client = self._ensure_path_seed_client()
             self.pr_node.get_logger().info("[Put] Decoding pathseed via PathSeedClient...")
             decoded_path = pr_client.send_decode_path_seed(file_path, start_joint_values, goal_joint_values)
-            if decoded_path is None:
-                self.pr_node.get_logger().error("[Put] decode failed: None returned.")
+            rows = int(getattr(decoded_path, "rows", 0) or 0) if decoded_path is not None else 0
+            tr.record_event(self.pr_node, "seed", skill="Put", path=str(file_path), rows=rows)
+            if decoded_path is None or rows == 0:
+                self.pr_node.get_logger().error(f"[Put] decode failed: {'None returned' if decoded_path is None else 'empty seed (rows=0)'}: {file_path}")
+                tr.record_stop(self.pr_node, "E-seed", "seed_decode", f"{file_path}")
                 return False
             self.pr_node.get_logger().info("[Put] Setting decoded pathseed...")
             pr_client.send_set_path_seed(decoded_path)
@@ -192,6 +208,123 @@ class Put(XArmUtilsWrapper, State):
         except Exception as e:
             self.pr_node.get_logger().error(f"[Put] Exception in generate_stomp_path_from_pathseed: {e}")
             return False
+
+    # ------------------------------------------------------------ place pose
+    def _yaw_search_deg(self):
+        """接近軸まわりに振る角度[deg]（パラメータ put_yaw_search_deg、既定 [180]）。
+        平行グリッパでは 180 度以外は置く向きが変わるので既定は 180 のみ。"""
+        try:
+            v = self.pr_node.get_parameter("put_yaw_search_deg").value
+        except Exception:
+            v = None
+        if v is None:
+            v = [180.0]
+        try:
+            v = [float(x) for x in v]
+        except TypeError:
+            v = [float(v)]
+        return [d for d in v if abs(d) > 1e-6]
+
+    def _place_pose_base(self):
+        """置き姿勢（self.pose）を base フレームの PoseStamped にする。3 要素なら真下姿勢を付ける。"""
+        pose = self.pose
+        if self.robot_utils._is_sequence(pose) and len(pose) == 3:
+            pose = list(pose) + list(self.place_orientation)
+        return self.robot_utils.transform_to_base(pose)
+
+    def _pre_place(self, place_ps, approach_base):
+        """待機点: 置き姿勢から接近方向の逆へ pre_place_offset だけ下がった所（同じ向き）。"""
+        pre = deepcopy(place_ps)
+        if approach_base is None:
+            pre.pose.position.z += self.pre_place_offset
+        else:
+            pre.pose.position.x -= approach_base[0] * self.pre_place_offset
+            pre.pose.position.y -= approach_base[1] * self.pre_place_offset
+            pre.pose.position.z -= approach_base[2] * self.pre_place_offset
+        return pre
+
+    def _resolve_place_goal(self, start_joints):
+        """置き姿勢（pose）を関節角に落とす。解けなければ None。
+
+        Grasp と同じ順で解く: 待機点を今の姿勢を種に解き、置き姿勢はその待機点を種に
+        解いて関節構成を揃える。まず衝突回避 IK（干渉解に落とさない）で「そのまま →
+        接近軸まわりに回す」を試し、全滅なら理由を WARN に残して干渉解を許して解く
+        （目標が干渉していれば m-STOMP の衝突検査が計画を止める）。
+        解けたら place_target / pre_place_target の TF に出す。
+        接近方向は姿勢の局所 +Z（core/grasp_orientation.py）から取る。
+        """
+        place_ps = self._place_pose_base()
+        if place_ps is None:
+            self.pr_node.get_logger().error("[Put] 置き姿勢を base へ変換できない")
+            return None
+        q0 = [place_ps.pose.orientation.x, place_ps.pose.orientation.y,
+              place_ps.pose.orientation.z, place_ps.pose.orientation.w]
+        approach_base = approach_from_orientation(q0)
+
+        def _solve(ps, label, fallback):
+            pre = self._pre_place(ps, approach_base)
+            pre_joints = self.robot_utils.normalize_joint_list(
+                self.robot_utils.compute_ik(pre, seed_joints=start_joints, fallback_to_collision=fallback)
+            )
+            if not pre_joints:
+                return None
+            goal = self.robot_utils.normalize_joint_list(
+                self.robot_utils.compute_ik(ps, seed_joints=pre_joints, fallback_to_collision=fallback)
+            )
+            if not goal:
+                return None
+            self.pr_node.get_logger().info(f"[Put] 置き姿勢の IK が解けた（{label}）: {goal}")
+            self._publish_place_tfs(ps, pre)
+            self._pre_place_joints = pre_joints
+            return goal
+
+        candidates = [(place_ps, "そのまま")]
+        if approach_base is not None:
+            for deg in self._yaw_search_deg():
+                q = rotate_about_approach(q0, approach_base, math.radians(deg))
+                if q is None:
+                    break
+                rotated = deepcopy(place_ps)
+                rotated.pose.orientation.x = float(q[0])
+                rotated.pose.orientation.y = float(q[1])
+                rotated.pose.orientation.z = float(q[2])
+                rotated.pose.orientation.w = float(q[3])
+                candidates.append((rotated, f"接近軸まわりに {deg:g} 度回した"))
+
+        # 1) 衝突回避 IK で全候補
+        for ps, label in candidates:
+            goal = _solve(ps, label, fallback=False)
+            if goal:
+                if label != "そのまま":
+                    self.pr_node.get_logger().warn(f"[Put] 置き姿勢が干渉するので{label}")
+                return goal
+        # 2) 全滅: 干渉を許して元の姿勢で解く（理由を残す）
+        self.pr_node.get_logger().warn(
+            f"[Put] 置き姿勢は yaw {len(candidates)} 通りのどれでも干渉しない解が無い。干渉解で続ける"
+        )
+        tr.record_event(self.pr_node, "ik_search_exhausted", skill="Put", yaw=len(candidates))
+        goal = _solve(place_ps, "干渉を許容", fallback=True)
+        if goal:
+            return goal
+        self.pr_node.get_logger().error("[Put] 置き姿勢の IK が解けない（待機点か置き姿勢に到達できない）")
+        return None
+
+    def _publish_place_tfs(self, place_ps, pre_place_ps=None):
+        """place_target / pre_place_target を base フレームの TF として出す（RViz 確認用）。"""
+        now = self.pr_node.get_clock().now().to_msg()
+        frames = [("place_target", place_ps)]
+        if pre_place_ps is not None:
+            frames.append(("pre_place_target", pre_place_ps))
+        for child_frame_id, ps in frames:
+            t = TransformStamped()
+            t.header.stamp = now
+            t.header.frame_id = self.robot_utils.base_frame
+            t.child_frame_id = child_frame_id
+            t.transform.translation.x = ps.pose.position.x
+            t.transform.translation.y = ps.pose.position.y
+            t.transform.translation.z = ps.pose.position.z
+            t.transform.rotation = ps.pose.orientation
+            self._tf_broadcaster.sendTransform(t)
 
     def set_start_and_goal_joint_values(self, blackboard: Any) -> Optional[Tuple[List[float], List[float]]]:
         # Start = current arm position，the robot is holding the object here
@@ -214,14 +347,14 @@ class Put(XArmUtilsWrapper, State):
             container_joints = self.joints
         elif self.pose:
             self.pr_node.get_logger().info(f"Moving to target pose from RAG: {self.pose}")
-            container_joints = blackboard["container_joints"] if "container_joints" in blackboard else None
-            # TODO: IK計算して関節角度に変換する処理を実装する
-            # container_joints = self.convert_pose_to_joints(self.pose)
+            # 以前は blackboard の container_joints（検査なし）を使っていた。置き姿勢を
+            # 待機点→置き姿勢の順に IK で解き、解けなければ except（E-ik）
+            container_joints = self._resolve_place_goal(start_joint_values)
         else:
             container_joints = [2.268928025, 0.8203047475, -1.8675022975, 0.0, 1.0471975500000001, 0.593411945]
 
         if container_joints is None:
-            self.pr_node.get_logger().error("Blackboard missing 'container_joints'.")
+            self.pr_node.get_logger().error("[Put] 置き姿勢の IK が解けない（待機点も置き姿勢も全滅）。")
             return None
 
         goal_joint_values = container_joints
@@ -300,6 +433,7 @@ class Put(XArmUtilsWrapper, State):
         joint_values = self.set_start_and_goal_joint_values(blackboard)
         if joint_values is None:
             self.pr_node.get_logger().error("Failed to set start/goal joint values.")
+            tr.record_stop(self.pr_node, "E-ik", "ik_goal", "Put: start/goal joint values unresolved")
             return "except"
 
         start_joint_values, goal_joint_values = joint_values
@@ -349,6 +483,7 @@ class Put(XArmUtilsWrapper, State):
             )
             if not success_generated:
                 self.pr_node.get_logger().error("Failed to generate STOMP path from PathSeed.")
+                tr.record_stop(self.pr_node, "E-seed", "seed_decode", "Put")
                 return "except"
         else:
             try:
@@ -356,13 +491,23 @@ class Put(XArmUtilsWrapper, State):
             except Exception as e:
                 self.pr_node.get_logger().warn(f"[Put] set_planning_pipeline(ompl) failed but continue: {e}")
 
+        ph.apply_planning_time(self.xarm, self.pr_node, self.planning_time_default, "Put")
+
+        ph.apply_start_state(self.xarm, self.pr_node, simulate_only, start_joint_values, "Put")
+
         self.xarm.set_joint_value_target(goal_joint_values)
-        success, plan, _, _ = self.xarm.plan()
+
+        success, plan, _plan_sec, _plan_err = self.xarm.plan()
+        _err_val = int(getattr(_plan_err, "val", 0) or 0)
+        tr.record_event(self.pr_node, "plan", skill="Put", success=bool(success), error_code=_err_val,
+                        planning_sec=round(float(_plan_sec or 0.0), 3), attempt=self.try_count + 1)
         if success:
             if simulate_only:
                 self.pr_node.get_logger().info(f"[Put] Storing pre-planned trajectory for {skill_key}.")
                 self._publish_display_trajectory(plan)
                 self.pr_node._pre_planned_trajectories[skill_key] = plan
+                if plan is not None and plan.points:
+                    ph.set_sim_end_joints(self._current_blackboard, plan.points[-1].positions)
                 if self._current_blackboard is not None:
                     setattr(self._current_blackboard, 'put_trajectory', deepcopy(plan))
                 return "success"
@@ -371,6 +516,7 @@ class Put(XArmUtilsWrapper, State):
             exec_success = self.xarm.execute()
             if not exec_success:
                 self.pr_node.get_logger().error("Execution failed.")
+                tr.record_stop(self.pr_node, "EXEC", "execution_failed", "Put")
                 return "except"
             self.pr_node.get_logger().info("Execution succeeded.")
             if self._current_blackboard is not None:
@@ -391,6 +537,8 @@ class Put(XArmUtilsWrapper, State):
                     f"(max_retries_default={self.max_retries_default}). Aborting Put skill."
                 )
                 self.try_count = 0
+                tr.record_stop(self.pr_node, "E-col", "planning",
+                               f"Put: no valid plan after retries (last MoveIt error_code={_err_val})")
                 return "except"
             self.pr_node.get_logger().warn(
                 f"No valid plan found, retrying... (attempt {self.try_count}/{self.max_retries_default})"
