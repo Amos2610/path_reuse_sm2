@@ -156,6 +156,8 @@ class PRSMNode(Node):
         # Pre-planned trajectories stored during simulate_only mode
         # key: "{skill_name}_{step_index}", value: JointTrajectory
         self._pre_planned_trajectories: dict = {}
+        # 実行（承認後）の Grasp で attach した物体の id。別タスクとして来る Put が detach に使う
+        self._held_object_id: str = ""
 
         self.get_logger().info("[PRSM] Node initialized. Waiting for /prsm_task_set service calls...")
 
@@ -200,6 +202,17 @@ class PRSMNode(Node):
         self.declare_parameter("planning_time_put", 5.0)
         # prsm_trial_log_dir: 試行記録（停止段階・検査名）の JSON 出力先。空なら ~/.ros/prsm_trials
         self.declare_parameter("prsm_trial_log_dir", "")
+
+        # --- 把持物体の attach（planning scene）---
+        self.declare_parameter("end_effector_attach_object", True)          # 把持後に物体を attach する
+        self.declare_parameter("end_effector_attach_required", False)       # attach/detach 失敗で except にする
+        self.declare_parameter("end_effector_attach_action", "/attach_object")
+        self.declare_parameter("end_effector_detach_action", "/detach_object")
+        self.declare_parameter("end_effector_attach_timeout_sec", 5.0)
+        self.declare_parameter("end_effector_attach_link", "link_tcp")       # 物体を付ける手先リンク
+        self.declare_parameter("end_effector_object_size", [0.05, 0.05, 0.05])  # 形状不明時の代替箱 [m]
+        self.declare_parameter("end_effector_object_offset_z", 0.0)         # 代替箱の中心（手先リンク +Z）[m]
+        self.declare_parameter("end_effector_detach_remove_from_scene", True)  # 置いた後にシーンから消す
 
         # --- 監視用パラメータ ---
         # 実行監視ノードがポーリングして、ロボットの現在状態を把握するためのパラメータ群
@@ -412,6 +425,21 @@ class PRSMNode(Node):
             # Clear stored trajectories after real execution
             if not simulate_only:
                 self._pre_planned_trajectories.clear()
+
+            # simulate が attach したままの物体を巻き戻す。attach は simulate でも実 planning
+            # scene に行われる。Put を含まないタスク（把持保持）だと attach が残置され、以後の
+            # 計画が開始状態衝突で通らなくなるので、simulate のときだけ消す
+            if simulate_only:
+                try:
+                    attached_after = bb["attached_object_id"] if "attached_object_id" in bb else None
+                except Exception:
+                    attached_after = getattr(bb, "attached_object_id", None)
+                if attached_after:
+                    from path_reuse_sm2.core.object_layer import detach_object
+                    detach_object(self, str(attached_after), remove_from_scene=True, tag="SimRollback")
+                    self.get_logger().info(
+                        f"[PRSM] シミュレーションが attach した {attached_after!r} を巻き戻した"
+                    )
 
             response.accepted = True
             response.message = f"Task executed with outcome={outcome}"
