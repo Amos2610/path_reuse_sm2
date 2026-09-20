@@ -15,6 +15,7 @@ from path_reuse_sm2.core.path_registry import PathRegistry
 from path_reuse_sm2.core.grasp_orientation import approach_from_orientation, rotate_about_approach
 from path_reuse_sm2.core import plan_helpers as ph
 from path_reuse_sm2.core import trial_record as tr
+from path_reuse_sm2.core.object_layer import detach_object
 import os
 
 
@@ -83,6 +84,43 @@ class Put(XArmUtilsWrapper, State):
         self.max_velocity_scale_default = 0.3
         self.max_accel_scale_default = 0.3
         self.planning_time_default = float(ph.param(self.pr_node, "planning_time_put", 5.0))
+
+    def _release_done(self, simulate_only: bool) -> Optional[str]:
+        """放した後に planning scene からも detach する。None なら成功、文字列なら outcome。"""
+        bb = self._current_blackboard
+        def _bb(key):
+            if bb is None:
+                return None
+            try:
+                return bb[key] if key in bb else None
+            except Exception:
+                return getattr(bb, key, None)
+        # 同じタスク内なら Blackboard、別タスクとして来た Put ならノードが持つ id、
+        # どちらも無ければ Skill の workpiece
+        object_id = (
+            str(_bb("attached_object_id") or "").strip()
+            or str(getattr(self.pr_node, "_held_object_id", "") or "").strip()
+            or (self.kwargs.get("workpiece") or "").strip()
+            or "prsm_workpiece"
+        )
+        # 置いた物をシーンに残すと、次の SkillMove（HOME 復帰など）が手先位置の
+        # ワールド物体と始点衝突して落ちるので、既定では外す（次のタスクの Find が測り直す）
+        remove_from_scene = bool(ph.param(self.pr_node, "end_effector_detach_remove_from_scene", True))
+        ok = detach_object(self.pr_node, object_id, remove_from_scene=remove_from_scene, tag="Put")
+        tr.record_event(self.pr_node, "detach", skill="Put", object_id=object_id, ok=bool(ok),
+                        remove_from_scene=remove_from_scene, simulate_only=bool(simulate_only))
+        if not ok:
+            self.pr_node.get_logger().error("[Put] detach failed. Aborting skill.")
+            tr.record_stop(self.pr_node, "E-col", "detach", f"Put: detach {object_id} failed")
+            return "except"
+        if bb is not None:
+            try:
+                bb["attached_object_id"] = ""
+            except Exception:
+                setattr(bb, "attached_object_id", "")
+        if not simulate_only and getattr(self.pr_node, "_held_object_id", "") == object_id:
+            self.pr_node._held_object_id = ""
+        return None
 
     def _get_workspace_root(self) -> str:
         import os
@@ -418,6 +456,9 @@ class Put(XArmUtilsWrapper, State):
                 if self._current_blackboard is not None:
                     setattr(self._current_blackboard, 'put_trajectory', deepcopy(pre_plan))
                 self.xarm.gripper_open()
+                failed = self._release_done(simulate_only)
+                if failed is not None:
+                    return failed
                 return "success"
 
         ######################################
@@ -510,6 +551,9 @@ class Put(XArmUtilsWrapper, State):
                     ph.set_sim_end_joints(self._current_blackboard, plan.points[-1].positions)
                 if self._current_blackboard is not None:
                     setattr(self._current_blackboard, 'put_trajectory', deepcopy(plan))
+                failed = self._release_done(simulate_only)
+                if failed is not None:
+                    return failed
                 return "success"
 
             self.pr_node.get_logger().info("Plan found, executing...")
@@ -522,6 +566,9 @@ class Put(XArmUtilsWrapper, State):
             if self._current_blackboard is not None:
                 setattr(self._current_blackboard, 'put_trajectory', deepcopy(plan))
             self.xarm.gripper_open()
+            failed = self._release_done(simulate_only)
+            if failed is not None:
+                return failed
             return "success"
         else:
             # JACIII安全性評価実験用の修正：max_retries_defaultが宣言されているのに

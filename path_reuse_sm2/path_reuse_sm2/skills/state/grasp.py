@@ -15,6 +15,7 @@ from path_reuse_sm2.core.path_registry import PathRegistry
 from path_reuse_sm2.core.grasp_orientation import approach_from_orientation, rotate_about_approach
 from path_reuse_sm2.core import plan_helpers as ph
 from path_reuse_sm2.core import trial_record as tr
+from path_reuse_sm2.core.object_layer import attach_object
 
 
 class Grasp(XArmUtilsWrapper, State):
@@ -85,6 +86,47 @@ class Grasp(XArmUtilsWrapper, State):
         self.max_velocity_scale_default = 0.3
         self.max_accel_scale_default = 0.3
         self.planning_time_default = float(ph.param(self.pr_node, "planning_time_grasp", 5.0))
+
+    def _grasp_done(self, simulate_only: bool) -> Optional[str]:
+        """把持後に物体を planning scene へ attach する。None なら成功、文字列なら outcome。
+
+        simulate_only でも呼ぶ（planning scene の操作のみ。続く Put の計画が「持っている
+        状態」で行われる。simulate の後は sm_node が巻き戻す）。
+        """
+        object_id = (self.workpiece or "").strip() or "prsm_workpiece"
+        bb = self._current_blackboard
+        def _bb(key):
+            if bb is None:
+                return None
+            try:
+                return bb[key] if key in bb else None
+            except Exception:
+                return getattr(bb, key, None)
+        attached = attach_object(
+            self.pr_node,
+            object_id,
+            primitive=_bb("obj_primitive"),
+            pose=_bb("obj_pose"),
+            frame_id=str(_bb("obj_pose_frame_id") or ""),
+            mesh=_bb("obj_mesh"),
+            tag="Grasp",
+        )
+        tr.record_event(self.pr_node, "attach", skill="Grasp", object_id=object_id, ok=bool(attached),
+                        simulate_only=bool(simulate_only))
+        if not attached:
+            self.pr_node.get_logger().error("[Grasp] attach failed. Aborting skill.")
+            tr.record_stop(self.pr_node, "E-col", "attach", f"Grasp: attach {object_id} failed")
+            return "except"
+        if bb is not None:
+            try:
+                bb["attached_object_id"] = object_id
+            except Exception:
+                setattr(bb, "attached_object_id", object_id)
+        # Blackboard は TaskSet ごとに新規なので、別タスクとして来る Put が参照できるよう
+        # ノードにも持たせる（simulate の巻き戻しでは触らない）
+        if not simulate_only:
+            self.pr_node._held_object_id = object_id
+        return None
 
     def _ensure_path_seed_client(self) -> PathSeedClient:
         if self.pr_client is None:
@@ -621,6 +663,9 @@ class Grasp(XArmUtilsWrapper, State):
                     self.xarm.gripper_close()
                 except Exception as e:
                     self.pr_node.get_logger().warn(f"[Grasp] gripper_close failed but continue: {e}")
+                failed = self._grasp_done(simulate_only)
+                if failed is not None:
+                    return failed
                 return "success"
 
         ######################################
@@ -803,6 +848,9 @@ class Grasp(XArmUtilsWrapper, State):
                     self.pr_node.get_logger().info(
                         f"[Grasp] stored grasp_trajectory to BB (points={len(plan.points)})"
                     )
+                failed = self._grasp_done(simulate_only)
+                if failed is not None:
+                    return failed
                 return "success"
 
             self.pr_node.get_logger().info("Plan found, executing...")
@@ -822,6 +870,9 @@ class Grasp(XArmUtilsWrapper, State):
                 self.xarm.gripper_close()
             except Exception as e:
                 self.pr_node.get_logger().warn(f"[Grasp] gripper_close failed but continue: {e}")
+            failed = self._grasp_done(simulate_only)
+            if failed is not None:
+                return failed
             return "success"
         else:
             # JACIII安全性評価実験用の修正：put.pyと同じ理由で，try_count/

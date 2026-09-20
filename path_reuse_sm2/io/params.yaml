@@ -18,6 +18,13 @@ prsm_node:      # ノード名
     # ----------- 計画時間 -----------
     planning_time_grasp: 5.0       # Grasp の計画時間[s]（MoveGroupInterface 既定と同じ）
     planning_time_put: 5.0         # Put の計画時間[s]
+    # ----------- 把持物体の attach（planning scene）-----------
+    end_effector_attach_object: true              # 把持後に物体を attach する
+    end_effector_attach_required: false           # attach/detach の失敗で except にする
+    end_effector_attach_link: "link_tcp"          # 物体を付ける手先リンク
+    end_effector_object_size: [0.05, 0.05, 0.05]  # 形状不明時の代替箱 [m]
+    end_effector_object_offset_z: 0.0             # 代替箱の中心（手先リンク +Z）[m]
+    end_effector_detach_remove_from_scene: true   # 置いた後にシーンから消す
 
     # # ----------- 例: ex1 の姿勢/目標 -----------
     # ex1:
